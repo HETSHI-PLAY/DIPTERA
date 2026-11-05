@@ -1,0 +1,8 @@
+node_modules
+test
+.git
+.gitignore
+*.tar
+*.tar.gz
+npm-debug.log*
+.DS_Store

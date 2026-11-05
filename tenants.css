@@ -1,0 +1,98 @@
+/* ---------- tenants dynamic list in settings ---------- */
+
+.tenant-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 600px;
+  margin-top: 4px;
+}
+
+/* Baris judul kolom "Tenant | Nomor" di atas daftar. */
+.tenant-head {
+  padding: 2px 10px 0;
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+.tenant-head span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.tenant-head .tenant-col-name,
+.tenant-head .tenant-col-num {
+  flex: 1;
+}
+
+.tenant-head .tenant-col-act {
+  width: 28px;
+  flex: none;
+}
+
+.tenants-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tenant-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.tenant-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+}
+
+.tenant-row input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.tenant-row .tenant-del {
+  background: transparent;
+  border: none;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s ease;
+  flex: none;
+}
+
+.tenant-row .tenant-del:hover {
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--rose);
+}
+
+.tenant-row .tenant-del svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Case ID Global Berikutnya (di bawah daftar tenant). */
+.case-id-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}

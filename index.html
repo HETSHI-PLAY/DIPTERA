@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Deeptera</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="tenants.css" />
+</head>
+
+<body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+          stroke-linejoin="round">
+          <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H8l-4 4z" />
+          <path d="M8 9h8M8 12h5" />
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Deeptera</h1>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="stats" id="stats">
+        <span class="stat" data-stat="done"><b>0</b> selesai</span>
+        <span class="stat" data-stat="running"><b>0</b> diproses</span>
+        <span class="stat" data-stat="pending"><b>0</b> menunggu</span>
+        <span class="stat" data-stat="error"><b>0</b> gagal</span>
+      </div>
+      <a class="btn ghost btn-sm" id="link-form" href="#" target="_blank" rel="noopener">Form n8n ↗</a>
+      <button class="btn ghost btn-sm icon-btn" id="btn-settings" type="button" title="Pengaturan">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+          stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path
+            d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.26.6.85 1 1.5 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z" />
+        </svg>
+        <span class="sr-only">Pengaturan</span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="settings" id="settings-panel" hidden>
+      <div class="settings-grid">
+        <div class="field">
+          <label class="field-label" for="set-base-url">n8n Base URL</label>
+          <input type="text" id="set-base-url" placeholder="http://192.168.1.10:5678" spellcheck="false" />
+          <div class="settings-inline">
+            <button class="btn ghost btn-sm" id="btn-base-from-page" type="button">Pakai IP halaman ini</button>
+            <span class="field-hint" id="base-url-page-hint"></span>
+          </div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Form path</span>
+          <input type="text" id="set-form-path" placeholder="nama-form-workflow" spellcheck="false" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Mode pengiriman</span>
+          <select id="set-submit-mode">
+            <option value="sequential">Berurutan (1 per 1)</option>
+            <option value="parallel">Paralel (semua sekaligus)</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Batas tunggu hasil (menit)</span>
+          <input type="number" id="set-timeout" min="1" max="240" step="1" />
+        </label>
+
+        <div class="field">
+          <span class="field-label">Perilaku</span>
+          <div class="checks">
+            <label class="check"><input type="checkbox" id="set-auto-number" /> <span>Isi nomor otomatis (tiket per
+                tenant &amp; IRIS Case ID berurutan)</span></label>
+            <label class="check"><input type="checkbox" id="set-auto-collapse" /> <span>Tutup kartu otomatis saat
+                dikirim</span></label>
+            <label class="check"><input type="checkbox" id="set-auto-resume" /> <span>Tandai selesai di n8n setelah
+                hasil
+                diambil</span></label>
+            <label class="check"><input type="checkbox" id="set-rewrite-host" /> <span>Sesuaikan host URL hasil dengan
+                Base URL</span></label>
+            <label class="check"><input type="checkbox" id="set-desktop-notify" /> <span>Notifikasi desktop saat form
+                selesai</span></label>
+          </div>
+        </div>
+
+      <div class="field">
+        <span class="field-label">Daftar Tenant &amp; Penomoran Tiket &amp; Case ID</span>
+        <span class="field-hint">Kelola tenant, nomor tiket awal per tenant, serta Case ID global berikutnya.</span>
+
+        <div class="tenant-table">
+          <div class="tenant-row tenant-head" aria-hidden="true">
+            <span class="tenant-col-name">Tenant</span>
+            <span class="tenant-col-num">Nomor</span>
+            <span class="tenant-col-act"></span>
+          </div>
+          <div id="tenants-list" class="tenants-list"></div>
+        </div>
+
+        <div class="settings-inline">
+          <button class="btn ghost btn-sm" id="btn-add-tenant" type="button">+ Tambah Tenant</button>
+        </div>
+
+        <label class="case-id-line">
+          <span class="field-label">Case ID Global Berikutnya</span>
+          <input type="text" id="set-next-case-id" placeholder="Mis. #1001" spellcheck="false" />
+        </label>
+
+        <div id="numbering-info" hidden></div>
+        <button id="btn-reset-numbering" type="button" hidden></button>
+      </div>
+
+      <label class="field field-full">
+        <span class="field-label">Definisi field form <span class="field-tag">JSON</span></span>
+        <textarea id="set-fields-json" rows="10" spellcheck="false"></textarea>
+      </label>
+
+      <div class="settings-actions">
+        <button class="btn primary" id="btn-save-settings" type="button">Simpan pengaturan</button>
+        <button class="btn ghost" id="btn-reset-settings" type="button">Reset default</button>
+        <span class="spacer"></span>
+        <button class="btn ghost danger" id="btn-clear-all" type="button">Hapus semua form</button>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <button class="btn primary" id="btn-add" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        Tambah Form
+      </button>
+      <button class="btn accent" id="btn-submit-all" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round">
+          <path d="M4.5 12.5 10 18 19.5 6.5" />
+        </svg>
+        <span id="btn-submit-all-label">Kirim Semua</span>
+      </button>
+      <button class="btn danger" id="btn-cancel" type="button" hidden>Batalkan</button>
+      <button class="btn ghost" id="btn-toggle-all" type="button">Tutup semua</button>
+      <span class="spacer"></span>
+    </div>
+
+    <section id="cards" class="cards" aria-live="polite"></section>
+
+    <div id="empty-state" class="empty" hidden>
+      <div class="empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+          stroke-linejoin="round">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      </div>
+      <h2>Belum ada form</h2>
+      <p>Tambah form untuk mulai mengirim alert ke workflow.</p>
+      <button class="btn primary" id="btn-add-empty" type="button">Tambah Form</button>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="config.js"></script>
+  <script src="numbering.js"></script>
+  <script src="extract.js"></script>
+  <script src="app.js"></script>
+</body>
+
+</html>
