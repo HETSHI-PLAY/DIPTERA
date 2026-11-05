@@ -310,3 +310,5 @@ npm run test:e2e    # aplikasi sungguhan di jsdom + server n8n tiruan
 | `config.js` | Konfigurasi default (`window.DIPTERA_CONFIG`); diisi dari environment saat `npm start`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Paket container untuk dipindah ke PC lain. |
 | `test/` | Uji unit, server, dan e2e beserta fixtures halaman hasil nyata. |
+
+-- end of document --
