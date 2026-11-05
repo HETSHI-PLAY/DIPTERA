@@ -1,4 +1,4 @@
-/* Server statis kecil untuk Deeptera.
+/* Server statis kecil untuk Diptera.
  *
  * Kenapa bukan `python3 -m http.server` saja:
  *   - host/port eksplisit (default 0.0.0.0 supaya bisa diakses lewat IP LAN),
@@ -84,7 +84,7 @@ function inContainer() {
 
 function configScript() {
   const configured = String(process.env.N8N_BASE_URL || '').trim();
-  const formPath = String(process.env.DEEPTERA_FORM_PATH || '').trim();
+  const formPath = String(process.env.DIPTERA_FORM_PATH || '').trim();
   const caseId = String(process.env.INITIAL_CASE_ID || '').trim();
   const tenantsRaw = String(process.env.TENANT_OPTIONS || '').trim();
   const ticketsRaw = String(process.env.INITIAL_TICKETS || '').trim();
@@ -118,12 +118,12 @@ function configScript() {
   if (Object.keys(initialTickets).length > 0) cfg.initialTickets = initialTickets;
 
   if (Object.keys(cfg).length > 0) {
-    return 'window.DEEPTERA_CONFIG = ' + JSON.stringify(cfg) + ';\n';
+    return 'window.DIPTERA_CONFIG = ' + JSON.stringify(cfg) + ';\n';
   }
   try {
     return fs.readFileSync(path.join(ROOT, 'config.js'), 'utf8');
   } catch {
-    return 'window.DEEPTERA_CONFIG = {};\n';
+    return 'window.DIPTERA_CONFIG = {};\n';
   }
 }
 
@@ -189,7 +189,7 @@ function printBanner(port, host) {
   const container = inContainer();
   const lans = container ? [] : lanUrls(port);
   console.log('');
-  console.log('  Deeptera');
+  console.log('  Diptera');
   console.log('  ' + '-'.repeat(48));
   console.log('  Lokal     : ' + local);
   if (container) {

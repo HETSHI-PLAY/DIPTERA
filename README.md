@@ -1,4 +1,4 @@
-# Deeptera
+# Diptera
 
 Halaman web statis (tanpa backend) untuk mengirim **banyak form sekaligus** ke workflow n8n
 **Charlie Reporter**, memantau setiap eksekusi, lalu membaca hasil tiap form (case name, severity,
@@ -18,7 +18,7 @@ environment — tidak ditanam di kode. `server.js` memuat file `.env` secara oto
    ```
 2. Sesuaikan isinya:
    - `N8N_BASE_URL` — alamat n8n Anda.
-   - `DEEPTERA_FORM_PATH` — path node form n8n.
+   - `DIPTERA_FORM_PATH` — path node form n8n.
    - `TENANT_OPTIONS` — **daftar tenant** (JSON array). Wajib diisi; dropdown tenant kosong tanpa ini.
    - `INITIAL_CASE_ID`, `INITIAL_TICKETS` — opsional untuk penomoran awal.
 
@@ -31,7 +31,7 @@ environment — tidak ditanam di kode. `server.js` memuat file `.env` secara oto
 ## Menjalankan
 
 ```bash
-cd deeptera
+cd diptera
 npm install               # memasang dependencies (jsdom untuk test)
 npm start                 # server.js, listen 0.0.0.0:8787
 ```
@@ -89,7 +89,7 @@ menyalin aplikasi ke PC lain tanpa memasang Node/npm.
 
 ```bash
 # Di PC ini: build image
-docker compose up -d --build          # atau: docker build -t deeptera:latest .
+docker compose up -d --build          # atau: docker build -t diptera:latest .
 
 # Buka http://localhost:8787 atau http://<IP-PC>:8787
 ```
@@ -110,11 +110,11 @@ N8N_BASE_URL=http://192.168.1.10:5678 docker compose up -d --build
 
 ```bash
 # Di PC asal
-docker save deeptera:latest -o deeptera.tar
+docker save diptera:latest -o diptera.tar
 
-# Salin deeptera.tar ke PC tujuan, lalu:
-docker load -i deeptera.tar
-docker run -d --name deeptera --restart unless-stopped -p 8787:8787 deeptera:latest
+# Salin diptera.tar ke PC tujuan, lalu:
+docker load -i diptera.tar
+docker run -d --name diptera --restart unless-stopped -p 8787:8787 diptera:latest
 ```
 
 Atau salin seluruh folder proyek (tanpa `node_modules`) ke PC tujuan yang punya Docker, lalu
@@ -176,7 +176,7 @@ Angka yang dimajukan adalah **angka terakhir** di dalam nilai, jadi awalan/akhir
 | Pengaturan | Default | Keterangan |
 | --- | --- | --- |
 | n8n Base URL | otomatis | `http://localhost:5678` saat halaman dibuka dari localhost; `http://<IP-halaman>:5678` saat dibuka lewat IP. Bisa juga lewat reverse proxy (mis. nginx `:8080`). Tombol **Pakai IP halaman ini** mengisi host halaman saat ini. |
-| Form path | dari env (`DEEPTERA_FORM_PATH`) | Diambil dari node **Alert Intake Form** di workflow. |
+| Form path | dari env (`DIPTERA_FORM_PATH`) | Diambil dari node **Alert Intake Form** di workflow. |
 | Mode pengiriman | Berurutan | **Berurutan** = form berikutnya dikirim setelah yang sebelumnya selesai (aman untuk AI lokal). **Paralel** = semua sekaligus. |
 | Batas tunggu hasil | 30 menit | Lewat batas ini kartu ditandai gagal (masih bisa “Periksa Hasil Lagi”). |
 | Isi nomor otomatis | aktif | Tiket per tenant + IRIS Case ID berurutan (lihat [Penomoran otomatis](#penomoran-otomatis)). |
@@ -307,6 +307,6 @@ npm run test:e2e    # aplikasi sungguhan di jsdom + server n8n tiruan
 | `extract.js` | Parser halaman hasil n8n (`IrisExtract`) — murni string, dipakai juga oleh unit test. |
 | `numbering.js` | Helper nomor berikutnya (`IrisNumbering`): `#1001` → `#1002`, `ASOC-2026-30073` → `ASOC-2026-30074`. |
 | `server.js` | Server statis tanpa dependensi; listen `0.0.0.0`, whitelist file, `/healthz`, cetak alamat LAN. |
-| `config.js` | Konfigurasi default (`window.DEEPTERA_CONFIG`); diisi dari environment saat `npm start`. |
+| `config.js` | Konfigurasi default (`window.DIPTERA_CONFIG`); diisi dari environment saat `npm start`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Paket container untuk dipindah ke PC lain. |
 | `test/` | Uji unit, server, dan e2e beserta fixtures halaman hasil nyata. |

@@ -1,5 +1,5 @@
 {
-  "name": "deeptera",
+  "name": "diptera",
   "version": "1.0.0",
   "private": true,
   "description": "Kirim banyak form sekaligus ke workflow Charlie Reporter (n8n) dan lihat hasil tiap form di kartu terpisah.",

@@ -1,6 +1,6 @@
-# Deeptera — container statis (tanpa backend).
-# Build:  docker build -t deeptera:latest .
-# Run:    docker run -d --name deeptera -p 8787:8787 deeptera:latest
+# Diptera — container statis (tanpa backend).
+# Build:  docker build -t diptera:latest .
+# Run:    docker run -d --name diptera -p 8787:8787 diptera:latest
 
 FROM node:22-alpine
 

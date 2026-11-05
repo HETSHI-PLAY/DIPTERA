@@ -1,15 +1,15 @@
 services:
-  deeptera:
+  diptera:
     build: .
-    image: deeptera:latest
-    container_name: deeptera
+    image: diptera:latest
+    container_name: diptera
     ports:
       - "${APP_PORT:-8787}:8787"
     environment:
       # Opsional: isi default Base URL n8n untuk browser yang belum punya
       # pengaturan tersimpan. Contoh: http://192.168.1.10:5678
       N8N_BASE_URL: "${N8N_BASE_URL:-}"
-      DEEPTERA_FORM_PATH: "${DEEPTERA_FORM_PATH:-}"
+      DIPTERA_FORM_PATH: "${DIPTERA_FORM_PATH:-}"
       TENANT_OPTIONS: "${TENANT_OPTIONS:-}"
       INITIAL_CASE_ID: "${INITIAL_CASE_ID:-}"
       INITIAL_TICKETS: "${INITIAL_TICKETS:-}"

@@ -1,4 +1,4 @@
-/* Deeptera — kirim banyak form ke workflow Charlie Reporter (n8n).
+/* Diptera — kirim banyak form ke workflow Charlie Reporter (n8n).
  *
  * Alur n8n 2.x yang dipakai:
  *   POST {base}/form/{path}        (multipart, field-0..field-N)  -> 200 { formWaitingUrl }
@@ -12,7 +12,7 @@
   const X = window.IrisExtract || {};
   const N = window.IrisNumbering || {};
   const STORAGE_KEY = 'iris-multi-form.v1';
-  const CONFIG = window.DEEPTERA_CONFIG || {};
+  const CONFIG = window.DIPTERA_CONFIG || {};
 
   // Daftar tenant disediakan lewat environment TENANT_OPTIONS (lihat .env.example).
   // Sengaja dikosongkan di kode supaya nama tenant internal tidak bocor ke repo.
@@ -1094,7 +1094,7 @@
 
   function updateTitle() {
     const active = state.cards.filter((c) => c.status === 'running' || c.status === 'queued').length;
-    document.title = active ? '(' + active + ') Deeptera' : 'Deeptera';
+    document.title = active ? '(' + active + ') Diptera' : 'Diptera';
   }
 
   function updateFieldMsg(card, field, control, msgEl) {
@@ -1247,7 +1247,7 @@
     if (document.hidden !== true) return;
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     try {
-      const n = new Notification(title, { body, tag: 'deeptera' });
+      const n = new Notification(title, { body, tag: 'diptera' });
       n.onclick = () => {
         window.focus();
         if (onClick) onClick();
