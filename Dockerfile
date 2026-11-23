@@ -1,7 +1,3 @@
-# Diptera — container statis (tanpa backend).
-# Build:  docker build -t diptera:latest .
-# Run:    docker run -d --name diptera -p 8787:8787 diptera:latest
-
 FROM node:22-alpine
 
 WORKDIR /app
@@ -9,9 +5,12 @@ WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
+    DATA_DIR=/app/data \
     IRIS_IN_CONTAINER=1
 
 COPY index.html styles.css tenants.css app.js extract.js numbering.js config.js server.js ./
+
+RUN mkdir -p /app/data && chown -R node:node /app
 
 EXPOSE 8787
 

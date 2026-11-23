@@ -1,13 +1,4 @@
-/* IrisExtract — helper untuk membaca halaman hasil (Form Ending) dari n8n.
- *
- * n8n 2.x: POST ke /form/<path> membalas JSON { formWaitingUrl }.
- * GET pada formWaitingUrl menghasilkan halaman HTML yang memuat
- * "responseHtml" apa adanya ({{{responseText}}}), berisi:
- *   <h2>Informasi Case IRIS</h2> ... <h2>Laporan Markdown</h2><pre><code>...markdown...</code></pre>
- *
- * Semua fungsi di sini murni berbasis string/regex supaya bisa dipakai
- * di browser maupun di Node (unit test) tanpa dependensi apa pun.
- */
+/* IrisExtract — parser halaman hasil (Form Ending) dari n8n untuk Diptera ASOC. */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module && module.exports) module.exports = api;
@@ -18,7 +9,6 @@
   const HEAD_MARKER = 'Informasi Case IRIS';
   const MD_MARKER = 'Laporan Markdown';
 
-  /** Decode entitas HTML satu pass (naruh &amp; terakhir supaya tidak dobel decode). */
   function decodeEntities(str) {
     return String(str ?? '').replace(
       /&(?:amp|lt|gt|quot|#0?39|apos|#\d+|#x[0-9a-f]+);/gi,
@@ -35,7 +25,6 @@
     );
   }
 
-  /** Buang <script>, <style>, komentar, dan event handler inline (proteksi dasar). */
   function sanitizeFragment(html) {
     let out = String(html ?? '');
     out = out.replace(/<script\b[\s\S]*?<\/script>/gi, '');
@@ -47,50 +36,55 @@
     return out.trim();
   }
 
-  /** Ambil teks polos dari HTML (untuk pesan error / debug). */
   function stripTags(html) {
-    let out = String(html ?? '');
-    out = out.replace(/<script\b[\s\S]*?<\/script>/gi, ' ');
-    out = out.replace(/<style\b[\s\S]*?<\/style>/gi, ' ');
-    out = out.replace(/<[^>]*>/g, ' ');
-    out = decodeEntities(out);
-    return out.replace(/\s+/g, ' ').trim();
+    return decodeEntities(
+      String(html ?? '')
+        .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' '),
+    ).trim();
   }
 
-  /** Cari semua blok <pre><code>…</code></pre> di dalam sebuah fragmen. */
-  function preCodeBlocks(fragment) {
+  function preCodeBlocks(html) {
     const blocks = [];
-    const re = /<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi;
+    const re = /<pre\b[^>]*>\s*<code\b[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi;
     let m;
-    while ((m = re.exec(fragment)) !== null) blocks.push(decodeEntities(m[1]).trim());
+    while ((m = re.exec(html)) !== null) {
+      blocks.push(decodeEntities(m[1]));
+    }
     return blocks;
   }
 
-  function extractSeverity(fragment) {
-    let m = fragment.match(/Severity:\s*<\/strong>\s*([^<\n]+)/i);
-    if (!m) m = fragment.match(/Severity:\s*([A-Za-z][A-Za-z ]*)/i);
-    return m ? m[1].replace(/[\s.]+$/, '').trim() : null;
+  function extractSeverity(html) {
+    const m = html.match(/Severity\s*:?\s*(?:<\/strong>|<\/b>)?\s*:?\s*([A-Za-z]+)/i);
+    return m ? m[1].toUpperCase() : null;
   }
 
-  /** Apakah halaman/teks ini kelihatan seperti halaman error n8n? */
+  function extractCaseId(html) {
+    const m = html.match(/IRIS\s+Case\s+ID\s*:?\s*(?:<\/strong>|<\/b>)?\s*:?\s*#?([0-9A-Za-z_-]+)/i);
+    return m ? m[1].trim() : null;
+  }
+
   function looksLikeError(text) {
     const t = String(text ?? '');
     return /finished with error|has finished with error|Problem in node|Workflow execution failed|Execution failed|ConflictError|ECONNREFUSED|could not be found|not registered|Internal Server Error|invalid token|Unauthorized/i.test(t);
   }
 
-  /**
-   * Parse halaman hasil n8n.
-   * @returns {{
-   *   found: boolean, fragmentHtml: string, caseName: string|null,
-   *   severity: string|null, markdown: string|null, statusLine: string|null,
-   *   pageTitle: string|null, pageText: string, reason?: string
-   * }}
-   */
+  function sliceEnd(html, lower, fromIdx) {
+    const scriptIdx = lower.indexOf('<script', fromIdx);
+    const bodyIdx = lower.indexOf('</body>', fromIdx);
+    const candidates = [scriptIdx, bodyIdx].filter((i) => i !== -1);
+    if (!candidates.length) return html.length;
+    return Math.min.apply(null, candidates);
+  }
+
   function parse(html) {
     const result = {
       found: false,
       fragmentHtml: '',
       caseName: null,
+      caseId: null,
       severity: null,
       markdown: null,
       statusLine: null,
@@ -111,12 +105,9 @@
     let end = html.length;
     let fragment = null;
 
-    // 1) Format normal: responseText disisipkan apa adanya (raw HTML).
     let markerIdx = lower.indexOf(HEAD_MARKER.toLowerCase());
     if (markerIdx === -1) markerIdx = lower.indexOf(MD_MARKER.toLowerCase());
 
-    // 1b) Kalau responseText ter-escape (&lt;h2&gt;…), marker mentah ikut terbaca —
-    //     deteksi lewat posisi marker ter-escape yang muncul lebih dulu.
     const escapedIdx = lower.indexOf('&lt;h2&gt;' + HEAD_MARKER.toLowerCase());
     const useEscaped = escapedIdx !== -1 && (markerIdx === -1 || escapedIdx <= markerIdx);
 
@@ -125,11 +116,9 @@
       start = h2Idx !== -1 && markerIdx - h2Idx < 200 ? h2Idx : markerIdx;
       end = sliceEnd(html, lower, start);
       fragment = html.slice(start, end);
-      // jaring pengaman: fragmen tanpa tag sama sekali berarti ikut ter-escape
       if (!/<[a-z!/]/i.test(fragment)) fragment = decodeEntities('<h2>' + fragment);
     } else if (useEscaped) {
       const ESCAPED_END = '&lt;/code&gt;&lt;/pre&gt;';
-      // akhir wilayah ter-escape: sebelum wrapper benar-benar berakhir
       const stops = ['&lt;/body&gt;', '</body>', '<script']
         .map((needle) => lower.indexOf(needle, escapedIdx))
         .filter((i) => i !== -1);
@@ -152,6 +141,7 @@
     result.fragmentHtml = sanitizeFragment(fragment);
     result.markdown = blocks.length ? blocks[blocks.length - 1] : null;
     result.caseName = blocks.length >= 2 ? blocks[0] : null;
+    result.caseId = extractCaseId(fragment);
     result.severity = extractSeverity(fragment);
 
     const statusMatch = fragment.match(/Siap disalin ke IRIS[^<]*/i);
@@ -160,20 +150,6 @@
     return result;
   }
 
-  /** Cari titik akhir fragmen: sebelum <script>/</body> berikutnya. */
-  function sliceEnd(html, lower, fromIdx) {
-    const scriptIdx = lower.indexOf('<script', fromIdx);
-    const bodyIdx = lower.indexOf('</body>', fromIdx);
-    let candidates = [scriptIdx, bodyIdx].filter((i) => i !== -1);
-    if (!candidates.length) return html.length;
-    return Math.min.apply(null, candidates);
-  }
-
-  /**
-   * Sesuaikan host dari formWaitingUrl dengan Base URL yang dikonfigurasi.
-   * Berguna kalau n8n membalas URL internal (mis. localhost:5678) padahal
-   * diakses lewat reverse proxy / port lain.
-   */
   function resolveResultUrl(waitingUrl, baseUrl, rewrite) {
     const raw = String(waitingUrl ?? '');
     if (!rewrite || !baseUrl) return raw;
@@ -190,7 +166,6 @@
     }
   }
 
-  /** Ambil execution id dari URL /form-waiting/<id>?signature=… */
   function execIdFromWaitingUrl(waitingUrl) {
     const m = String(waitingUrl ?? '').match(/\/form-waiting\/([^/?#]+)/);
     return m ? m[1] : null;

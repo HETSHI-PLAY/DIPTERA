@@ -1,16 +1,23 @@
 services:
   diptera:
     build: .
-    image: diptera:latest
+    image: diptera:unified
     container_name: diptera
     ports:
       - "${APP_PORT:-8787}:8787"
     environment:
-      # Opsional: isi default Base URL n8n untuk browser yang belum punya
-      # pengaturan tersimpan. Contoh: http://192.168.1.10:5678
-      N8N_BASE_URL: "${N8N_BASE_URL:-}"
-      DIPTERA_FORM_PATH: "${DIPTERA_FORM_PATH:-}"
-      TENANT_OPTIONS: "${TENANT_OPTIONS:-}"
-      INITIAL_CASE_ID: "${INITIAL_CASE_ID:-}"
-      INITIAL_TICKETS: "${INITIAL_TICKETS:-}"
+      DEFAULT_WORKSPACE: "${DEFAULT_WORKSPACE:-asoc}"
+      ASOC_N8N_BASE_URL: "${ASOC_N8N_BASE_URL:-http://10.20.100.65:5678}"
+      ASOC_FORM_PATH: "${ASOC_FORM_PATH:-alpha-form}"
+      ASOC_IRIS_BASE_URL: "${ASOC_IRIS_BASE_URL:-https://10.20.100.66}"
+      ASOC_CALLBACK_URL: "${ASOC_CALLBACK_URL:-http://10.20.100.117:8787/api/n8n-callback}"
+      ASOC_CASE_ID_MODE: "${ASOC_CASE_ID_MODE:-auto_iris}"
+      ASOC_TENANT_OPTIONS: '${ASOC_TENANT_OPTIONS:-["wicida","instikibali","petra","praditauniversity","sgu","ikmicirebon"]}'
+      SOC_N8N_BASE_URL: "${SOC_N8N_BASE_URL:-http://10.20.100.134:5678}"
+      SOC_FORM_PATH: "${SOC_FORM_PATH:-Job-Creator}"
+      SOC_IRIS_BASE_URL: "${SOC_IRIS_BASE_URL:-}"
+      SOC_TENANT_OPTIONS: '${SOC_TENANT_OPTIONS:-["petra","praditauniversity","wicida","instikibali","ikmicirebon","sgu"]}'
+      DATA_DIR: "/app/data"
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
