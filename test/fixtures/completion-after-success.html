@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+	<meta charset='UTF-8' />
+	<meta name='viewport' content='width=device-width, initial-scale=1.0' />
+	<link rel='icon' type='image/png' href='https://n8n.io/favicon.ico' />
+	<link href='https://fonts.googleapis.com/css?family=Open+Sans' rel='stylesheet' type='text/css' />
+
+	<title>Touch Mid</title>
+
+	<style>
+		:root {
+			/* Fonts */
+			--font-family: 'Open Sans', sans-serif;
+			--font-weight-normal: 400;
+			--font-weight-bold: 600;
+			--font-size-body: 12px;
+			--font-size-link: 12px;
+			--font-size-header: 20px;
+			--font-size-subheader: 14px;
+
+			/* Colors */
+			--color-background: #FBFCFE;
+			--color-card-bg: white;
+			--color-card-border: #DBDFE7;
+			--color-card-shadow: #634DFF0F;
+			--color-link: #7E8186;
+			--color-header: #525356;
+			--color-header-subtext: #7E8186;
+
+			/* Spacing and dimensions */
+			--padding-container-top: 24px;
+			--container-width: 448px;
+			--card-padding: 24px;
+			--card-margin-bottom: 16px;
+			--card-border-radius: 8px;
+		}
+
+		*,
+		::after,
+		::before {
+			box-sizing: border-box;
+			margin: 0;
+			padding: 0;
+		}
+
+		body {
+			font-family: var(--font-family);
+			font-weight: var(--font-weight-normal);
+			font-size: var(--font-size-body);
+			display: flex;
+			flex-direction: column;
+			justify-content: start;
+			background-color: var(--color-background);
+		}
+
+		.container {
+			margin: auto;
+			text-align: center;
+			padding-top: var(--padding-container-top);
+			width: var(--container-width);
+		}
+
+		.card {
+			padding: var(--card-padding);
+			background-color: var(--color-card-bg);
+			border: 1px solid var(--color-card-border);
+			border-radius: var(--card-border-radius);
+			box-shadow: 0px 4px 16px 0px var(--color-card-shadow);
+			margin-bottom: var(--card-margin-bottom);
+		}
+
+		.n8n-link a {
+			color: var(--color-link);
+			font-weight: var(--font-weight-bold);
+			font-size: var(--font-size-link);
+			text-decoration: none;
+		}
+
+		.n8n-link svg {
+			display: inline-block;
+			vertical-align: middle;
+		}
+
+		.header h1 {
+			color: var(--color-header);
+			font-size: var(--font-size-header);
+			font-weight: var(--font-weight-normal);
+			padding-bottom: 8px;
+		}
+
+		.header p {
+			color: var(--color-header-subtext);
+			font-size: var(--font-size-subheader);
+			font-weight: var(--font-weight-normal);
+		}
+	</style>
+
+</head>
+
+	<body>
+			<h2>Informasi Case IRIS</h2><p><strong>Severity:</strong> LOW</p><hr><h2>Laporan Markdown</h2><pre><code># Mid structure markdown</code></pre>
+	<script>
+		// Get signature from URL for fetch requests
+		const url = new URL(window.location.href);
+		const formSignature = url.searchParams.get('signature');
+
+		// Set only inside the n8n hosting shell's frame: the path prefix whose pages this
+		// page may hand to the host to navigate to. Empty everywhere else.
+		const hostNavigationPath = '';
+		const isShellHosted = window.parent !== window && !!hostNavigationPath;
+		
+		// True for this form's own follow-up pages, the only ones the shell will move to.
+		function isHostNavigable(target) {
+			if (!hostNavigationPath) return false;
+			try {
+				const here = new URL(window.location.href);
+				const resolved = new URL(target, here);
+				if (resolved.origin !== here.origin) return false;
+				return resolved.pathname === hostNavigationPath
+					|| resolved.pathname.startsWith(hostNavigationPath + '/');
+			} catch (e) {
+				return false;
+			}
+		}
+		
+		// Ask the host for a move this document can't make itself: inside the shell it is
+		// sandboxed to an opaque origin, so a navigation it starts counts as cross-site and
+		// the browser withholds the form's own auth cookie. The shell runs on the real
+		// origin, so the move it makes for us keeps the cookie. `type` says which move —
+		// another page of this form inside the frame, or the author's redirect for the tab.
+		function requestHostNavigation(type, target) {
+			// targetOrigin '*': an opaque-origin document cannot name its parent's origin,
+			// and the payload is only a URL the parent can already read.
+			window.parent.postMessage({ type, url: String(target) }, '*');
+		}
+		
+		// Move to another page of this form.
+		function navigateTo(target) {
+			if (isShellHosted && isHostNavigable(target)) requestHostNavigation('n8n-form-navigate', target);
+			else window.location.replace(target);
+		}
+		
+		// Leave for the redirect the form's author configured. The form is finished, so this
+		// takes the whole tab, which is where a form rendered without the shell ends up too.
+		function redirectTo(target) {
+			if (isShellHosted) requestHostNavigation('n8n-form-redirect', target);
+			else window.location.replace(target);
+		}
+
+		let interval = 1000;
+		let timeoutId;
+		const checkExecutionStatus = async () => {
+			if (!interval) return;
+
+			try {
+				const statusUrl = new URL(window.location.href);
+				statusUrl.pathname = statusUrl.pathname + '/n8n-execution-status';
+				// Include signature in fetch request for validation
+				if (formSignature) {
+					statusUrl.searchParams.set('signature', formSignature);
+				}
+				const response = await fetch(statusUrl.toString());
+				const text = (await response.text()).trim();
+
+				if (text === "form-waiting") {
+					// Redirect with signature in URL (will be cleaned after load)
+					const redirectUrl = new URL(window.location.href);
+					if (formSignature) {
+						redirectUrl.searchParams.set('signature', formSignature);
+					}
+					navigateTo(redirectUrl.toString());
+					return;
+				}
+
+				if(["canceled", "crashed", "error", "success", "null" ].includes(text)) {
+					interval = 0;
+					clearTimeout(timeoutId);
+					return;
+				}
+
+				interval = Math.round(interval * 1.1);
+				timeoutId = setTimeout(checkExecutionStatus, interval);
+			} catch (error) {
+				console.error("Error fetching data:", error);
+			}
+		};
+
+		document.addEventListener('DOMContentLoaded', function () {
+			const binaries = "%5B%5D"
+				?	JSON.parse(decodeURIComponent("%5B%5D"))
+				: [];
+
+			for (const binary of binaries) {
+				const byteArray = binary.data.type === 'Buffer'
+					? new Uint8Array(binary.data.data)
+					: Uint8Array.from(binary.data, c => c.charCodeAt(0));
+
+				const blob = new Blob(
+					[byteArray],
+					{ type: binary.type }
+				);
+
+				const link = document.createElement("a");
+				link.href = URL.createObjectURL(blob);
+				link.download = binary.fileName;
+				document.body.appendChild(link);
+
+				link.click();
+				document.body.removeChild(link);
+			}
+		});
+
+			// Include signature in POST URL for waiting forms
+			let postUrl = '';
+			if (window.location.href.includes('form-waiting') && formSignature) {
+				postUrl = '?signature=' + encodeURIComponent(formSignature);
+			}
+
+			// Double-stash (Handlebars-escaped) so a future change to the token
+			// format can't introduce HTML/JS injection here. The current token
+			// is `<base64url>|<digits>|<hex>` — none of those characters
+			// trigger HTML escaping, so this is a no-op today.
+			const authToken = '';
+			const headers = {};
+			if (authToken) {
+				headers['x-auth-token'] = authToken;
+			}
+
+			fetch(postUrl, {
+					method: 'POST',
+					body: {},
+					headers,
+			})
+			.then(async function (response) {
+					if (response.status === 200) {
+						const redirectUrl = document.getElementById("redirectUrl");
+						if (redirectUrl) {
+							redirectTo(redirectUrl.href);
+						}
+					}
+
+					const text = await response.text();
+					let json;
+
+					try {
+							json = JSON.parse(text);
+					} catch (e) {}
+
+					if (json?.redirectURL) {
+							redirectTo(json.redirectURL);
+					}
+			})
+			.catch(function (error) {
+					console.error('Error:', error);
+			})
+			.finally(() => {
+				timeoutId = setTimeout(checkExecutionStatus, interval);
+			});
+	</script>
+	</body>
+
+</html>

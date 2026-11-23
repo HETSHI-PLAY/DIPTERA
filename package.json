@@ -5,6 +5,6 @@
   "description": "Diptera ASOC — Multi-form SOC intake untuk Alpha Reporter (n8n) dengan Auto-IRIS Case ID, shared counter/riwayat, dan mode Reporting/Repeating.",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/diptera-asoc.test.js"
+    "test": "node test/diptera-unified.test.js && node test/approvals.test.js && node test/numbering.test.js && node test/extract.test.js && node test/server.test.js"
   }
 }

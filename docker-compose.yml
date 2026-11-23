@@ -17,6 +17,9 @@ services:
       SOC_FORM_PATH: "${SOC_FORM_PATH:-Job-Creator}"
       SOC_IRIS_BASE_URL: "${SOC_IRIS_BASE_URL:-}"
       SOC_TENANT_OPTIONS: '${SOC_TENANT_OPTIONS:-["petra","praditauniversity","wicida","instikibali","ikmicirebon","sgu"]}'
+      APPROVAL_API_SECRET: "${APPROVAL_API_SECRET:-}"
+      APPROVAL_ALLOWED_HOSTS: "${APPROVAL_ALLOWED_HOSTS:-}"
+      APPROVAL_REWRITE_RESUME_HOST: "${APPROVAL_REWRITE_RESUME_HOST:-false}"
       DATA_DIR: "/app/data"
     volumes:
       - ./data:/app/data

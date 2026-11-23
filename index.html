@@ -81,6 +81,14 @@
           <span id="tab-history-label">Riwayat ASOC</span>
           <span class="tab-count" id="tab-history-count">0</span>
         </button>
+        <button class="nav-tab" id="tab-approvals" type="button" role="tab" aria-selected="false" aria-controls="view-approvals">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3l7 4v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V7l7-4z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+          <span>Approval</span>
+          <span class="tab-count" id="tab-approvals-count">0</span>
+        </button>
       </nav>
 
       <div class="stats" id="stats" aria-label="Ringkasan status antrian">
@@ -113,6 +121,24 @@
           <span class="sr-only">Segarkan</span>
         </button>
       </div>
+    </section>
+
+    <!-- Live Rejection Alert Banner (Pengganti Telegram - Inform Rejection, tampil lintas tab) -->
+    <section class="rejection-banner" id="rejection-banner" hidden aria-live="polite" aria-label="Notifikasi case ditolak">
+      <div class="rejection-banner-head">
+        <div class="rejection-banner-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M15 9l-6 6M9 9l6 6" />
+          </svg>
+          <strong id="rejection-banner-heading">Case Ditolak — Perlu Tindak Lanjut</strong>
+          <span class="chip appr-denied" id="rejection-banner-count">0</span>
+        </div>
+        <div class="rejection-banner-head-actions">
+          <button class="btn ghost btn-xs" id="btn-rejection-open-tab" type="button">Lihat di Approval</button>
+        </div>
+      </div>
+      <div class="rejection-banner-list" id="rejection-banner-list"></div>
     </section>
 
     <!-- Settings Panel (Collapsible, Per-Workspace) -->
@@ -284,7 +310,7 @@
         <div class="repeat-checks">
           <label class="repeat-check"><input type="checkbox" id="rep-create-iris" /> <span>Buat Case IRIS baru</span></label>
           <label class="repeat-check"><input type="checkbox" id="rep-update-iris" /> <span>Update Summary ke IRIS</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-approval" /> <span>Approval Telegram &amp; Close</span></label>
+          <label class="repeat-check"><input type="checkbox" id="rep-approval" /> <span>Approval Diptera &amp; Close</span></label>
           <label class="repeat-check"><input type="checkbox" id="rep-email" /> <span>Kirim Email &amp; PDF</span></label>
           <label class="repeat-check"><input type="checkbox" id="rep-gdoc" /> <span>Upload Google Docs</span></label>
           <label class="repeat-check"><input type="checkbox" id="rep-sheet" /> <span>Catat Google Sheets</span></label>
@@ -352,6 +378,93 @@
       <div id="history-empty" class="empty" hidden>
         <h2>Belum ada riwayat tersimpan</h2>
         <p id="history-empty-desc">Setiap laporan yang dikirim pada workspace ini akan tercatat otomatis di sini untuk acuan seluruh tim.</p>
+      </div>
+    </section>
+
+    <!-- VIEW 3: Pusat Approval Webhook n8n -->
+    <section id="view-approvals" class="approvals-view" role="tabpanel" aria-labelledby="tab-approvals" hidden>
+      <div class="approval-meta-bar">
+        <div class="approval-analyst-wrap">
+          <label class="field-label" for="appr-analyst-name">Reviewer / Analis</label>
+          <input type="text" id="appr-analyst-name" placeholder="Nama analis (opsional, tercatat di log keputusan)" spellcheck="false" />
+        </div>
+        <div class="approval-endpoint-wrap">
+          <span class="field-label">Endpoint Intake n8n</span>
+          <div class="approval-endpoint-row">
+            <code class="approval-endpoint-code" id="appr-endpoint-url">POST /api/approvals</code>
+            <button class="btn ghost btn-xs" id="btn-copy-appr-url" type="button">Salin Endpoint</button>
+          </div>
+        </div>
+        <details class="approval-guide">
+          <summary>Panduan Integrasi n8n</summary>
+          <div class="approval-guide-body">
+            <p>Hubungkan node approval workflow n8n ke Diptera dengan pola 4 langkah:</p>
+            <ol>
+              <li><strong>HTTP Request (POST):</strong> Kirim metadata case/alert + <code>{{ $execution.resumeUrl }}</code> ke endpoint <code>/api/approvals</code>.</li>
+              <li><strong>Node Wait (On Webhook Call):</strong> Pause workflow menunggu webhook <code>POST</code> (atau <code>GET</code>) dengan batas waktu opsional.</li>
+              <li><strong>Klik Approve / Deny di Web Diptera:</strong> Server Diptera memanggil <code>resumeUrl</code> membawa payload <code>decision</code> (<code>"approve"</code>/<code>"deny"</code>), <code>approved</code> (<code>true</code>/<code>false</code>), <code>reason</code>, dan <code>decidedBy</code>.</li>
+              <li><strong>Node IF / Switch:</strong> Cek <code>{{ $json.body.decision === 'approve' }}</code> atau <code>{{ $json.body.approved === true }}</code> untuk melanjutkan aksi (IRIS/Email/dll).</li>
+            </ol>
+            <p style="margin-top: 6px; margin-bottom: 0;">Notifikasi penolakan dari n8n (<code>POST /api/rejections</code>) juga muncul otomatis sebagai banner lintas tab dan di filter <strong>Ditolak</strong>.</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="approval-toolbar">
+        <div class="appr-status-tabs" role="group" aria-label="Filter status approval">
+          <button class="appr-status-btn active" type="button" data-appr-status="pending" aria-pressed="true">
+            Menunggu <span class="tab-count" id="appr-count-pending">0</span>
+          </button>
+          <button class="appr-status-btn" type="button" data-appr-status="approved" aria-pressed="false">
+            Disetujui <span class="tab-count" id="appr-count-approved">0</span>
+          </button>
+          <button class="appr-status-btn" type="button" data-appr-status="denied" aria-pressed="false">
+            Ditolak <span class="tab-count" id="appr-count-denied">0</span>
+          </button>
+          <button class="appr-status-btn" type="button" data-appr-status="expired" aria-pressed="false">
+            Kedaluwarsa <span class="tab-count" id="appr-count-expired">0</span>
+          </button>
+          <button class="appr-status-btn" type="button" data-appr-status="all" aria-pressed="false">
+            Semua <span class="tab-count" id="appr-count-all">0</span>
+          </button>
+        </div>
+
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input type="search" id="appr-search" placeholder="Cari Case Name, #Case ID, tenant, workflow, atau alasan…" />
+        </div>
+
+        <select id="appr-filter-ws" aria-label="Filter workspace approval">
+          <option value="all">Semua Workspace</option>
+          <option value="asoc">ASOC</option>
+          <option value="soc">SOC</option>
+        </select>
+
+        <select id="appr-filter-sev" aria-label="Filter severity approval">
+          <option value="">Semua Severity</option>
+          <option value="CRITICAL">CRITICAL</option>
+          <option value="HIGH">HIGH</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="LOW">LOW</option>
+        </select>
+
+        <button class="btn ghost btn-sm" id="btn-appr-refresh" type="button">Segarkan</button>
+      </div>
+
+      <div id="approvals-list" class="approvals-list" aria-live="polite"></div>
+
+      <div id="approvals-empty" class="empty" hidden>
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 4v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V7l7-4z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+        </div>
+        <h2 id="approvals-empty-title">Tidak ada permintaan approval menunggu</h2>
+        <p id="approvals-empty-desc">Permintaan approval dari workflow n8n yang dikirim ke endpoint Diptera akan langsung terkumpul di halaman ini.</p>
       </div>
     </section>
   </main>

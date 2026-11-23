@@ -226,6 +226,29 @@
     return `${p(wib.getUTCDate())}/${p(wib.getUTCMonth() + 1)} ${p(wib.getUTCHours())}:${p(wib.getUTCMinutes())}`;
   }
 
+  function fmtRemaining(iso) {
+    if (!iso) return null;
+    const targetMs = Date.parse(iso);
+    if (Number.isNaN(targetMs)) return null;
+    const diffMs = targetMs - Date.now();
+    if (diffMs <= 0) return { text: 'Lewat batas waktu', cls: 'overdue' };
+    const totalMin = Math.floor(diffMs / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    const text = h > 0 ? `Batas ${h}j ${m}m` : `Batas ${Math.max(1, m)}m`;
+    return { text, cls: diffMs <= 3600000 ? 'soon' : '' };
+  }
+
+  function fmtRetryCountdown(iso) {
+    if (!iso) return null;
+    const targetMs = Date.parse(iso);
+    if (Number.isNaN(targetMs)) return null;
+    const diffMs = targetMs - Date.now();
+    if (diffMs <= 0) return 'Menunggu jadwal ulang…';
+    const min = Math.max(1, Math.ceil(diffMs / 60000));
+    return `Approval ulang dalam ${min}m`;
+  }
+
   function cleanCaseIdDigits(val) {
     return String(val ?? '').trim().replace(/^#+/, '').trim();
   }
@@ -241,6 +264,13 @@
       return sc.callbackUrl.trim();
     }
     return window.location.origin + '/api/n8n-callback';
+  }
+
+  function approvalEndpointUrl() {
+    if (CONFIG && typeof CONFIG.publicUrl === 'string' && CONFIG.publicUrl.trim()) {
+      return CONFIG.publicUrl.trim().replace(/\/+$/, '') + '/api/approvals';
+    }
+    return window.location.origin + '/api/approvals';
   }
 
   function irisCaseLink(caseId, ws = state.activeWorkspace) {
@@ -313,10 +343,31 @@
     history: [],
     historyCounts: { asoc: 0, soc: 0 },
     expandedHistoryId: null,
+    approvals: [],
+    approvalCounts: {
+      pending: 0,
+      approved: 0,
+      denied: 0,
+      expired: 0,
+      total: 0,
+      byWorkspace: { asoc: { pending: 0, total: 0 }, soc: { pending: 0, total: 0 } },
+    },
+    approvalStatusFilter: 'pending',
+    approvalWorkspaceFilter: 'all',
+    approvalSeverityFilter: '',
+    analystName: '',
+    knownPendingApprovalIds: null,
+    expandedApprovalMdIds: new Set(),
+    expandedApprovalDataIds: new Set(),
+    approvalDraftReasons: new Map(),
+    openRejections: [],
+    rejectionCounts: { open: 0, acknowledged: 0, resolved: 0, total: 0 },
+    knownOpenRejectionIds: null,
   };
 
   let persistTimer = null;
   let sharedPollTimer = null;
+  let approvalPollTimer = null;
   let ticketPropagateTimer = null;
   const refs = new Map();
 
@@ -372,6 +423,9 @@
         state.activeWorkspace = saved.activeWorkspace;
         state.settingsWorkspace = saved.activeWorkspace;
         state.historyWorkspace = saved.activeWorkspace;
+      }
+      if (typeof saved.analystName === 'string') {
+        state.analystName = saved.analystName;
       }
       for (const ws of ['asoc', 'soc']) {
         const sWs = saved.workspaces?.[ws];
@@ -445,6 +499,7 @@
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         activeWorkspace: state.activeWorkspace,
+        analystName: state.analystName,
         workspaces: {
           asoc: serializeWorkspace('asoc'),
           soc: serializeWorkspace('soc'),
@@ -479,6 +534,27 @@
         if (typeof wsData?.historyCount === 'number') {
           state.historyCounts[ws] = wsData.historyCount;
         }
+      }
+      if (data?.approvals) {
+        const prevPending = state.approvalCounts?.pending ?? 0;
+        state.approvalCounts = data.approvals;
+        updateApprovalTabCounts();
+        updateWorkspaceBadges();
+        const shouldRefreshApprovals = state.view === 'approvals' || data.approvals.pending !== prevPending || data.approvals.pending > 0;
+        if (shouldRefreshApprovals && state.knownPendingApprovalIds !== null) {
+          if (state.view === 'approvals' && (state.approvalStatusFilter === 'pending' || state.approvalStatusFilter === 'all')) {
+            fetchApprovals(true, { notifyNew: true });
+          } else {
+            checkPendingApprovalsBackground(state.view === 'approvals');
+          }
+        }
+      }
+      if (data?.rejections) {
+        state.rejectionCounts = data.rejections;
+        state.openRejections = Array.isArray(data.rejections.openItems) ? data.rejections.openItems : [];
+        notifyNewRejections(state.openRejections);
+        renderRejectionBanner();
+        updateWorkspaceBadges();
       }
       renderSharedBar();
       updateHistoryTabCounts();
@@ -523,6 +599,27 @@
     $('#tab-history-count').textContent = String(state.historyCounts[activeWs] ?? 0);
     $('#hist-count-asoc').textContent = String(state.historyCounts.asoc ?? 0);
     $('#hist-count-soc').textContent = String(state.historyCounts.soc ?? 0);
+  }
+
+  function updateApprovalTabCounts() {
+    const c = state.approvalCounts || {};
+    const pending = Number(c.pending) || 0;
+    const tabCount = $('#tab-approvals-count');
+    if (tabCount) {
+      tabCount.textContent = String(pending);
+      tabCount.classList.toggle('has-pending', pending > 0);
+    }
+    const map = {
+      '#appr-count-pending': pending,
+      '#appr-count-approved': Number(c.approved) || 0,
+      '#appr-count-denied': Number(c.denied) || 0,
+      '#appr-count-expired': Number(c.expired) || 0,
+      '#appr-count-all': Number(c.total) || 0,
+    };
+    for (const [sel, val] of Object.entries(map)) {
+      const el = $(sel);
+      if (el) el.textContent = String(val);
+    }
   }
 
   function renderSharedBar() {
@@ -795,7 +892,14 @@
       (sum, ws) => sum + wsState(ws).cards.filter((c) => c.status === 'running' || c.status === 'queued').length,
       0,
     );
-    document.title = (totalRunning ? `(${totalRunning}) ` : '') + `Diptera — ${WORKSPACE_META[state.activeWorkspace].code} (${WORKSPACE_META[state.activeWorkspace].subtitle})`;
+    const pendingAppr = Number(state.approvalCounts?.pending) || 0;
+    const openRej = Number(state.rejectionCounts?.open) || 0;
+    const titleParts = [];
+    if (totalRunning > 0) titleParts.push(String(totalRunning));
+    if (pendingAppr > 0) titleParts.push(`${pendingAppr} approval`);
+    if (openRej > 0) titleParts.push(`${openRej} ditolak`);
+    const prefix = titleParts.length ? `(${titleParts.join(' · ')}) ` : '';
+    document.title = prefix + `Diptera — ${WORKSPACE_META[state.activeWorkspace].code} (${WORKSPACE_META[state.activeWorkspace].subtitle})`;
   }
 
   function switchWorkspace(nextWs) {
@@ -1273,7 +1377,7 @@
       const irisHref = irisCaseLink(cid, ws);
       const execHref = card.execId ? joinUrl(wsState(ws).settings.baseUrl, '/executions/' + encodeURIComponent(card.execId)) : null;
       const approvalNote = (ws === 'asoc' && card.result.awaitingApproval)
-        ? '<span class="chip status-queued">Menunggu approval Telegram di n8n</span>'
+        ? '<button class="chip status-queued act-open-approvals" type="button" title="Buka menu Approval di Diptera">Menunggu approval di Diptera ↗</button>'
         : '';
 
       r.resultBox.innerHTML = `
@@ -1310,6 +1414,8 @@
         ticketNumber: readVal(card, 'ticket', ws),
         irisCaseId: cid,
       }));
+      const openApprBtn = $('.act-open-approvals', r.resultBox);
+      if (openApprBtn) openApprBtn.addEventListener('click', () => switchView('approvals'));
     } else {
       r.resultBox.hidden = true;
     }
@@ -2045,6 +2151,11 @@
           : `<span class="mono">${esc(formatCaseIdBadge(item.irisCaseId))}</span>`)
         : '<span class="field-hint">—</span>';
 
+      const apprLabels = { pending: 'Approval', approved: 'Approved', denied: 'Denied', expired: 'Expired' };
+      const apprBadge = item.approvalStatus
+        ? ` <span class="chip appr-${esc(item.approvalStatus)}">${esc(apprLabels[item.approvalStatus] || item.approvalStatus)}</span>`
+        : '';
+
       tr.innerHTML = `
         <td class="mono">${esc(fmtWib(item.createdAt))}</td>
         <td><span class="chip mode-${esc(item.mode)}">${itemWs === 'soc' ? 'SOC' : (item.mode === 'repeating' ? 'Repeating' : 'Reporting')}</span></td>
@@ -2058,7 +2169,7 @@
             ${item.classification ? `<span class="field-hint">${esc(item.classification)}</span>` : ''}
           </span>
         </td>
-        <td><span class="chip status-${esc(item.status)}">${esc(STATUS_LABEL[item.status] || item.status)}</span></td>
+        <td><span class="chip status-${esc(item.status)}">${esc(STATUS_LABEL[item.status] || item.status)}</span>${apprBadge}</td>
         <td>
           <div class="hist-actions">
             ${item.markdown ? `<button class="btn ghost btn-xs act-toggle-md" type="button">${state.expandedHistoryId === item.id ? 'Tutup MD' : 'Lihat MD'}</button>` : ''}
@@ -2094,6 +2205,593 @@
         mdTr.innerHTML = `<td colspan="8"><pre class="md-pre">${esc(item.markdown)}</pre></td>`;
         tbody.appendChild(mdTr);
       }
+    }
+  }
+
+  /* ---------------- Approval Center View ---------------- */
+
+  const APPROVAL_STATUS_LABEL = {
+    pending: 'Menunggu',
+    approved: 'Disetujui',
+    denied: 'Ditolak',
+    expired: 'Kedaluwarsa',
+  };
+
+  function safeExternalHref(rawUrl) {
+    if (!rawUrl) return null;
+    try {
+      const u = new URL(String(rawUrl));
+      return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function findApprovalCardEl(id) {
+    const cards = document.querySelectorAll('#approvals-list .approval-card');
+    for (const el of cards) {
+      if (el.dataset.apprId === id) return el;
+    }
+    return null;
+  }
+
+  function syncApprovalFilterControls() {
+    document.querySelectorAll('.appr-status-btn[data-appr-status]').forEach((btn) => {
+      const active = btn.dataset.apprStatus === state.approvalStatusFilter;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+    const wsSel = $('#appr-filter-ws');
+    if (wsSel && wsSel.value !== state.approvalWorkspaceFilter) wsSel.value = state.approvalWorkspaceFilter;
+    const sevSel = $('#appr-filter-sev');
+    if (sevSel && sevSel.value !== state.approvalSeverityFilter) sevSel.value = state.approvalSeverityFilter;
+  }
+
+  function notifyNewApprovals(pendingItems) {
+    if (state.knownPendingApprovalIds === null) {
+      state.knownPendingApprovalIds = new Set(pendingItems.map((x) => x.id));
+      return;
+    }
+    const fresh = pendingItems.filter((x) => !state.knownPendingApprovalIds.has(x.id));
+    state.knownPendingApprovalIds = new Set(pendingItems.map((x) => x.id));
+    if (!fresh.length) return;
+
+    const first = fresh[0];
+    const title = fresh.length === 1
+      ? `Approval baru: ${first.caseName || formatCaseIdBadge(first.irisCaseId)}`
+      : `${fresh.length} permintaan approval baru`;
+    const body = [first.tenant, first.severity, first.workflowName].filter(Boolean).join(' · ') || 'Klik untuk meninjau di menu Approval.';
+
+    toast({
+      type: 'info',
+      title,
+      body,
+      actionLabel: 'Buka Approval',
+      onAction: () => switchView('approvals'),
+    });
+
+    const w = wsState(first.workspace || state.activeWorkspace);
+    if (w.settings.desktopNotify && document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try { new Notification('Diptera · ' + title, { body }); } catch {}
+    }
+  }
+
+  async function checkPendingApprovalsBackground(alsoRefreshView = false) {
+    try {
+      const data = await apiFetch('/api/approvals?status=pending&limit=200');
+      const items = Array.isArray(data?.items) ? data.items : [];
+      if (data?.counts) {
+        state.approvalCounts = data.counts;
+        updateApprovalTabCounts();
+        updateWorkspaceBadges();
+      }
+      notifyNewApprovals(items);
+      if (alsoRefreshView && state.view === 'approvals') {
+        fetchApprovals(true, { notifyNew: false });
+      }
+    } catch {}
+  }
+
+  async function fetchApprovals(silent = false, opts = {}) {
+    const status = state.approvalStatusFilter || 'pending';
+    const ws = state.approvalWorkspaceFilter || 'all';
+    const sev = state.approvalSeverityFilter || '';
+    const q = ($('#appr-search')?.value || '').trim();
+
+    const params = new URLSearchParams({
+      status,
+      workspace: ws,
+      limit: '200',
+    });
+    if (sev) params.set('severity', sev);
+    if (q) params.set('q', q);
+
+    const listEl = $('#approvals-list');
+    const emptyEl = $('#approvals-empty');
+
+    const activeEl = document.activeElement;
+    const typingTextarea = activeEl && activeEl.tagName === 'TEXTAREA' && activeEl.closest('#approvals-list');
+    const activeCardId = typingTextarea ? typingTextarea.closest('.approval-card')?.dataset?.apprId : null;
+    const selStart = typingTextarea ? typingTextarea.selectionStart : null;
+    const selEnd = typingTextarea ? typingTextarea.selectionEnd : null;
+    const prevSig = state.approvals.map((x) => `${x.id}:${x.status}:${x.updatedAt}:${x.lastError || ''}`).join('|');
+
+    if (!silent && listEl) {
+      if (emptyEl) emptyEl.hidden = true;
+      listEl.hidden = false;
+      listEl.innerHTML = '<div class="hist-loading-cell">Memuat daftar approval…</div>';
+    }
+
+    try {
+      const data = await apiFetch('/api/approvals?' + params.toString());
+      const nextItems = Array.isArray(data?.items) ? data.items : [];
+      const nextSig = nextItems.map((x) => `${x.id}:${x.status}:${x.updatedAt}:${x.lastError || ''}`).join('|');
+
+      state.approvals = nextItems;
+      if (data?.counts) {
+        state.approvalCounts = data.counts;
+        updateApprovalTabCounts();
+        updateWorkspaceBadges();
+      }
+
+      const isUnfilteredPendingSet = ws === 'all' && !sev && !q && (status === 'pending' || status === 'all');
+      if (isUnfilteredPendingSet) {
+        const pendingOnly = nextItems.filter((x) => x.status === 'pending');
+        if (opts.notifyNew === false && state.knownPendingApprovalIds === null) {
+          state.knownPendingApprovalIds = new Set(pendingOnly.map((x) => x.id));
+        } else {
+          notifyNewApprovals(pendingOnly);
+        }
+      }
+
+      if (silent && typingTextarea && prevSig === nextSig) {
+        for (const item of nextItems) {
+          const cardEl = findApprovalCardEl(item.id);
+          const dlEl = cardEl ? $('.approval-deadline', cardEl) : null;
+          if (dlEl && item.deadlineAt) {
+            const rem = fmtRemaining(item.deadlineAt);
+            if (rem) {
+              dlEl.textContent = rem.text;
+              dlEl.className = 'approval-deadline' + (rem.cls ? ' ' + rem.cls : '');
+            }
+          }
+        }
+        return;
+      }
+
+      renderApprovalsList();
+      if (activeCardId) {
+        const cardEl = findApprovalCardEl(activeCardId);
+        const nextTa = cardEl ? $('.appr-reason-input', cardEl) : null;
+        if (nextTa) {
+          nextTa.focus();
+          if (selStart != null && selEnd != null) {
+            try { nextTa.setSelectionRange(selStart, selEnd); } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      if (!silent) {
+        toast({ type: 'error', title: 'Gagal memuat approval', body: e.message });
+      }
+    }
+  }
+
+  function renderApprovalsList() {
+    const listEl = $('#approvals-list');
+    const emptyEl = $('#approvals-empty');
+    if (!listEl || !emptyEl) return;
+
+    if (!state.approvals.length) {
+      listEl.innerHTML = '';
+      listEl.hidden = true;
+      emptyEl.hidden = false;
+      const hasFilters = Boolean(($('#appr-search')?.value || '').trim() || state.approvalWorkspaceFilter !== 'all' || state.approvalSeverityFilter);
+      const titleMap = {
+        pending: 'Tidak ada permintaan approval menunggu',
+        approved: 'Belum ada approval yang disetujui',
+        denied: 'Belum ada approval yang ditolak',
+        expired: 'Tidak ada approval kedaluwarsa',
+        all: 'Belum ada data approval tersimpan',
+      };
+      $('#approvals-empty-title').textContent = hasFilters
+        ? 'Tidak ada approval yang cocok dengan filter'
+        : (titleMap[state.approvalStatusFilter] || titleMap.all);
+      $('#approvals-empty-desc').textContent = hasFilters
+        ? 'Coba ubah kata kunci pencarian atau filter workspace/severity.'
+        : 'Permintaan approval dari workflow n8n (HTTP Request POST + Node Wait) akan terkumpul di sini.';
+      return;
+    }
+
+    emptyEl.hidden = true;
+    listEl.hidden = false;
+    listEl.innerHTML = '';
+
+    for (const item of state.approvals) {
+      const cardEl = document.createElement('article');
+      cardEl.className = `approval-card appr-${item.status || 'pending'}`;
+      cardEl.dataset.apprId = item.id;
+
+      const itemWs = item.workspace === 'soc' ? 'soc' : 'asoc';
+      const wsMeta = WORKSPACE_META[itemWs];
+      const caseHref = safeExternalHref(item.caseUrl) || irisCaseLink(item.irisCaseId, itemWs);
+      const execHref = item.execId && wsState(itemWs).settings.baseUrl
+        ? safeExternalHref(joinUrl(wsState(itemWs).settings.baseUrl, '/executions/' + encodeURIComponent(item.execId)))
+        : null;
+
+      const rem = item.status === 'pending' && item.deadlineAt ? fmtRemaining(item.deadlineAt) : null;
+      const mdOpen = state.expandedApprovalMdIds.has(item.id);
+      const dataOpen = state.expandedApprovalDataIds.has(item.id);
+      const hasData = Boolean(item.alertData || item.metadata);
+      const formattedData = hasData
+        ? JSON.stringify(item.alertData ?? item.metadata, null, 2)
+        : '';
+      const draftReason = state.approvalDraftReasons.has(item.id)
+        ? state.approvalDraftReasons.get(item.id)
+        : (item.reason || '');
+
+      const kvParts = [];
+      if (item.workflowName) kvParts.push(`<span class="approval-kv-item"><strong>Workflow:</strong> ${esc(item.workflowName)}</span>`);
+      if (item.tenant) kvParts.push(`<span class="approval-kv-item"><strong>Tenant:</strong> ${esc(item.tenant)}</span>`);
+      if (item.clientName) kvParts.push(`<span class="approval-kv-item"><strong>Client:</strong> ${esc(item.clientName)}</span>`);
+      if (item.ticketNumber) kvParts.push(`<span class="approval-kv-item"><strong>Tiket:</strong> <span class="mono">${esc(item.ticketNumber)}</span></span>`);
+      if (item.openDate) kvParts.push(`<span class="approval-kv-item"><strong>Dibuat:</strong> ${esc(item.openDate)}</span>`);
+
+      const auditActionLabel = item.status === 'approved'
+        ? 'Disetujui'
+        : (item.status === 'denied' ? 'Ditolak' : 'Kedaluwarsa');
+      const auditMetaParts = [
+        auditActionLabel,
+        item.decidedBy ? `oleh ${item.decidedBy}` : '',
+        item.decidedAt || item.updatedAt ? `pada ${fmtWib(item.decidedAt || item.updatedAt)}` : '',
+        item.resumeHttpStatus ? `HTTP ${item.resumeHttpStatus}` : '',
+      ].filter(Boolean).join(' ');
+
+      let rejectionInlineHtml = '';
+      if (item.status === 'denied' && item.rejectionId) {
+        if (item.rejectionStatus === 'open') {
+          const retryLabel = fmtRetryCountdown(item.nextRetryAt);
+          rejectionInlineHtml = `
+            <span class="approval-kv-row" style="margin-top: 4px;">
+              ${retryLabel ? `<span class="rejection-retry-pill">${esc(retryLabel)}</span>` : ''}
+            </span>`;
+        } else if (item.rejectionStatus === 'acknowledged') {
+          rejectionInlineHtml = '<span class="chip appr-approved" style="align-self: flex-start; margin-top: 4px;">Sudah ditangani</span>';
+        } else if (item.rejectionStatus === 'resolved') {
+          rejectionInlineHtml = '<span class="chip appr-expired" style="align-self: flex-start; margin-top: 4px;">Sudah diajukan ulang</span>';
+        }
+      }
+
+      cardEl.innerHTML = `
+        <div class="approval-card-head">
+          <div class="approval-card-badges">
+            <span class="shared-ws-pill">${esc(wsMeta.code)}</span>
+            <span class="chip appr-${esc(item.status)}">${esc(APPROVAL_STATUS_LABEL[item.status] || item.status)}</span>
+            ${item.severity ? `<span class="chip sev-${esc(item.severity)}">${esc(item.severity)}</span>` : ''}
+            ${item.classification ? `<span class="chip">${esc(item.classification)}</span>` : ''}
+            ${item.irisCaseId ? (caseHref
+              ? `<a class="chip mode-reporting" href="${esc(caseHref)}" target="_blank" rel="noopener">IRIS ${esc(formatCaseIdBadge(item.irisCaseId))} ↗</a>`
+              : `<span class="chip mode-reporting">Case ${esc(formatCaseIdBadge(item.irisCaseId))}</span>`) : ''}
+            ${item.attempt > 1 ? `<span class="chip mode-repeating">Percobaan #${esc(item.attempt)}</span>` : ''}
+          </div>
+          <div class="approval-card-time">
+            <span class="mono">${esc(fmtWib(item.createdAt))}</span>
+            ${rem ? `<span class="approval-deadline${rem.cls ? ' ' + esc(rem.cls) : ''}" title="Deadline: ${esc(fmtWib(item.deadlineAt))}">${esc(rem.text)}</span>` : ''}
+            ${item.execId ? (execHref
+              ? `<a class="iris-link" href="${esc(execHref)}" target="_blank" rel="noopener">n8n #${esc(item.execId)} ↗</a>`
+              : `<span class="mono">n8n #${esc(item.execId)}</span>`) : ''}
+          </div>
+        </div>
+
+        <h3 class="approval-card-title">${esc(item.caseName || 'Permintaan Approval')}</h3>
+
+        ${kvParts.length ? `<div class="approval-kv-row">${kvParts.join('')}</div>` : ''}
+
+        ${item.summary ? `<div class="approval-summary-box">${esc(item.summary)}</div>` : ''}
+
+        ${(item.markdown || hasData) ? `
+          <div class="approval-details">
+            <div class="approval-details-actions">
+              ${item.markdown ? `<button class="btn ghost btn-xs act-appr-toggle-md" type="button">${mdOpen ? 'Tutup Laporan Markdown' : 'Lihat Laporan Markdown'}</button>` : ''}
+              ${item.markdown ? '<button class="btn ghost btn-xs act-appr-copy-md" type="button">Salin Markdown</button>' : ''}
+              ${hasData ? `<button class="btn ghost btn-xs act-appr-toggle-data" type="button">${dataOpen ? 'Tutup Data Alert' : 'Lihat Data Alert'}</button>` : ''}
+            </div>
+            ${mdOpen && item.markdown ? `<pre class="md-pre">${esc(item.markdown)}</pre>` : ''}
+            ${dataOpen && hasData ? `<pre class="md-pre">${esc(formattedData)}</pre>` : ''}
+          </div>
+        ` : ''}
+
+        ${item.status === 'pending' ? `
+          <div class="approval-decision-bar">
+            ${item.lastError ? `
+              <div class="error-box">
+                <strong>Gagal mengirim keputusan ke n8n: ${esc(item.lastError)}</strong>
+                <div>Pastikan workflow n8n masih aktif menunggu webhook resume. Jika eksekusi n8n sudah kedaluwarsa, tandai item ini sebagai kedaluwarsa.</div>
+                <div style="margin-top: 8px;">
+                  <button class="btn ghost btn-xs act-appr-expire" type="button">Tandai Kedaluwarsa</button>
+                </div>
+              </div>
+            ` : ''}
+            <div class="approval-decision-controls">
+              <div class="approval-reason-wrap">
+                <label class="field-label" for="appr-reason-${esc(item.id)}">Catatan / Alasan (dikirim ke workflow n8n)</label>
+                <textarea id="appr-reason-${esc(item.id)}" class="appr-reason-input" rows="2" placeholder="Opsional saat Approve; jelaskan alasan jika Deny…"></textarea>
+              </div>
+              <div class="approval-decision-btns">
+                <button class="btn accent act-appr-approve" type="button">Approve</button>
+                <button class="btn danger act-appr-deny" type="button">Deny</button>
+              </div>
+            </div>
+          </div>
+        ` : `
+          <div class="approval-audit-bar">
+            <div class="approval-audit-info">
+              <span><strong>${esc(auditMetaParts)}</strong></span>
+              ${item.reason ? `<span>Alasan: ${esc(item.reason)}</span>` : ''}
+              ${rejectionInlineHtml}
+            </div>
+            <div class="hist-actions">
+              ${item.status === 'denied' && item.rejectionId && item.rejectionStatus === 'open' ? '<button class="btn ghost btn-xs act-appr-ack-rej" type="button">Tandai Ditangani</button>' : ''}
+              ${item.status === 'denied' && itemWs === 'asoc' ? '<button class="btn ghost btn-xs act-appr-repeat" type="button">Ulangi (Repeat)</button>' : ''}
+              <button class="btn ghost btn-xs act-appr-delete" type="button">Hapus</button>
+            </div>
+          </div>
+        `}
+      `;
+
+      const reasonInput = $('.appr-reason-input', cardEl);
+      if (reasonInput) {
+        reasonInput.value = draftReason;
+        reasonInput.addEventListener('input', () => {
+          state.approvalDraftReasons.set(item.id, reasonInput.value);
+        });
+      }
+
+      const toggleMdBtn = $('.act-appr-toggle-md', cardEl);
+      if (toggleMdBtn) {
+        toggleMdBtn.addEventListener('click', () => {
+          if (state.expandedApprovalMdIds.has(item.id)) state.expandedApprovalMdIds.delete(item.id);
+          else state.expandedApprovalMdIds.add(item.id);
+          renderApprovalsList();
+        });
+      }
+
+      const copyMdBtn = $('.act-appr-copy-md', cardEl);
+      if (copyMdBtn) copyMdBtn.addEventListener('click', () => copyText(item.markdown, 'Markdown'));
+
+      const toggleDataBtn = $('.act-appr-toggle-data', cardEl);
+      if (toggleDataBtn) {
+        toggleDataBtn.addEventListener('click', () => {
+          if (state.expandedApprovalDataIds.has(item.id)) state.expandedApprovalDataIds.delete(item.id);
+          else state.expandedApprovalDataIds.add(item.id);
+          renderApprovalsList();
+        });
+      }
+
+      const approveBtn = $('.act-appr-approve', cardEl);
+      if (approveBtn) {
+        approveBtn.addEventListener('click', () => submitApprovalDecision(item, 'approve', reasonInput ? reasonInput.value : '', cardEl));
+      }
+
+      const denyBtn = $('.act-appr-deny', cardEl);
+      if (denyBtn) {
+        denyBtn.addEventListener('click', () => submitApprovalDecision(item, 'deny', reasonInput ? reasonInput.value : '', cardEl));
+      }
+
+      const expireBtn = $('.act-appr-expire', cardEl);
+      if (expireBtn) {
+        expireBtn.addEventListener('click', () => markApprovalExpired(item));
+      }
+
+      const deleteBtn = $('.act-appr-delete', cardEl);
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => deleteApprovalItem(item));
+      }
+
+      const ackRejBtn = $('.act-appr-ack-rej', cardEl);
+      if (ackRejBtn && item.rejectionId) {
+        ackRejBtn.addEventListener('click', () => acknowledgeRejection(item.rejectionId));
+      }
+
+      const repeatRejBtn = $('.act-appr-repeat', cardEl);
+      if (repeatRejBtn) {
+        repeatRejBtn.addEventListener('click', () => createRepeatFromMeta({
+          workspace: itemWs,
+          tenant: item.tenant,
+          ticketNumber: item.ticketNumber,
+          irisCaseId: item.irisCaseId,
+        }));
+      }
+
+      listEl.appendChild(cardEl);
+    }
+  }
+
+  function notifyNewRejections(openItems) {
+    if (state.knownOpenRejectionIds === null) {
+      state.knownOpenRejectionIds = new Set(openItems.map((x) => x.id));
+      return;
+    }
+    const fresh = openItems.filter((x) => !state.knownOpenRejectionIds.has(x.id));
+    state.knownOpenRejectionIds = new Set(openItems.map((x) => x.id));
+    if (!fresh.length) return;
+
+    const first = fresh[0];
+    const title = fresh.length === 1
+      ? `Case ditolak: ${first.caseName || formatCaseIdBadge(first.irisCaseId)}`
+      : `${fresh.length} case ditolak perlu tindak lanjut`;
+    const body = first.reason ? `Alasan: ${first.reason}` : 'Klik untuk melihat detail penolakan.';
+    toast({
+      type: 'error',
+      title,
+      body,
+      actionLabel: 'Lihat',
+      onAction: () => {
+        state.approvalStatusFilter = 'denied';
+        switchView('approvals');
+      },
+    });
+
+    const w = wsState(first.workspace || state.activeWorkspace);
+    if (w.settings.desktopNotify && document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      try { new Notification('Diptera · ' + title, { body }); } catch {}
+    }
+  }
+
+  function renderRejectionBanner() {
+    const banner = $('#rejection-banner');
+    const listEl = $('#rejection-banner-list');
+    const countEl = $('#rejection-banner-count');
+    if (!banner || !listEl || !countEl) return;
+
+    const items = state.openRejections || [];
+    if (!items.length) {
+      banner.hidden = true;
+      listEl.innerHTML = '';
+      return;
+    }
+
+    banner.hidden = false;
+    countEl.textContent = String(state.rejectionCounts?.open || items.length);
+    listEl.innerHTML = '';
+
+    for (const item of items) {
+      const itemWs = item.workspace === 'soc' ? 'soc' : 'asoc';
+      const caseHref = safeExternalHref(item.caseUrl) || irisCaseLink(item.irisCaseId, itemWs);
+      const retryText = fmtRetryCountdown(item.nextRetryAt);
+
+      const row = document.createElement('div');
+      row.className = 'rejection-item';
+      row.dataset.rejId = item.id;
+      row.innerHTML = `
+        <div class="rejection-item-main">
+          <div class="rejection-item-meta">
+            <span class="shared-ws-pill">${esc(WORKSPACE_META[itemWs].code)}</span>
+            ${item.severity ? `<span class="chip sev-${esc(item.severity)}">${esc(item.severity)}</span>` : ''}
+            ${item.classification ? `<span class="chip">${esc(item.classification)}</span>` : ''}
+            ${item.irisCaseId ? (caseHref
+              ? `<a class="iris-link" href="${esc(caseHref)}" target="_blank" rel="noopener">${esc(formatCaseIdBadge(item.irisCaseId))} ↗</a>`
+              : `<span class="mono">${esc(formatCaseIdBadge(item.irisCaseId))}</span>`) : ''}
+            ${item.clientName || item.tenant ? `<span>${esc(item.clientName || item.tenant)}</span>` : ''}
+            ${item.decidedBy ? `<span>Reviewer: <strong>${esc(item.decidedBy)}</strong></span>` : ''}
+            ${retryText ? `<span class="rejection-retry-pill">${esc(retryText)}</span>` : ''}
+          </div>
+          <div class="rejection-item-title">${esc(item.caseName || 'Case Ditolak')}</div>
+          <div class="rejection-item-reason">Alasan: ${esc(item.reason || 'Tidak ada alasan yang diberikan.')}</div>
+        </div>
+        <div class="rejection-item-actions">
+          ${caseHref ? `<a class="btn ghost btn-xs" href="${esc(caseHref)}" target="_blank" rel="noopener">Buka IRIS ↗</a>` : ''}
+          ${itemWs === 'asoc' ? '<button class="btn ghost btn-xs act-rej-repeat" type="button">Ulangi (Repeat)</button>' : ''}
+          <button class="btn ghost btn-xs act-rej-ack" type="button">Tandai Ditangani</button>
+        </div>
+      `;
+
+      const repBtn = $('.act-rej-repeat', row);
+      if (repBtn) {
+        repBtn.addEventListener('click', () => createRepeatFromMeta({
+          workspace: itemWs,
+          tenant: item.tenant,
+          ticketNumber: item.ticketNumber,
+          irisCaseId: item.irisCaseId,
+        }));
+      }
+
+      const ackBtn = $('.act-rej-ack', row);
+      if (ackBtn) {
+        ackBtn.addEventListener('click', () => acknowledgeRejection(item.id));
+      }
+
+      listEl.appendChild(row);
+    }
+  }
+
+  async function acknowledgeRejection(rejectionId) {
+    try {
+      await apiFetch('/api/rejections/' + encodeURIComponent(rejectionId), {
+        method: 'PATCH',
+        body: JSON.stringify({
+          status: 'acknowledged',
+          acknowledgedBy: state.analystName.trim() || null,
+        }),
+      });
+      toast({ type: 'info', title: 'Notifikasi penolakan ditandai selesai' });
+      await fetchSharedState(true);
+      if (state.view === 'approvals') {
+        await fetchApprovals(true, { notifyNew: false });
+      }
+    } catch (e) {
+      toast({ type: 'error', title: 'Gagal menandai penolakan', body: e.message });
+    }
+  }
+
+  async function submitApprovalDecision(item, decision, reason, cardEl) {
+    const approveBtn = cardEl ? $('.act-appr-approve', cardEl) : null;
+    const denyBtn = cardEl ? $('.act-appr-deny', cardEl) : null;
+    if (approveBtn) {
+      approveBtn.disabled = true;
+      if (decision === 'approve') approveBtn.textContent = 'Mengirim…';
+    }
+    if (denyBtn) {
+      denyBtn.disabled = true;
+      if (decision === 'deny') denyBtn.textContent = 'Mengirim…';
+    }
+
+    try {
+      await apiFetch('/api/approvals/' + encodeURIComponent(item.id) + '/decide', {
+        method: 'POST',
+        body: JSON.stringify({
+          decision,
+          reason: String(reason || '').trim(),
+          decidedBy: state.analystName.trim(),
+        }),
+      });
+      state.approvalDraftReasons.delete(item.id);
+      toast({
+        type: 'success',
+        title: decision === 'approve' ? 'Approval disetujui' : 'Approval ditolak',
+        body: `${item.caseName || formatCaseIdBadge(item.irisCaseId)} — workflow n8n dilanjutkan.`,
+      });
+      await fetchApprovals(true, { notifyNew: false });
+      fetchSharedState(true);
+    } catch (e) {
+      toast({
+        type: 'error',
+        title: 'Gagal mengirim keputusan ke n8n',
+        body: e.message,
+      });
+      await fetchApprovals(true, { notifyNew: false });
+      fetchSharedState(true);
+    }
+  }
+
+  async function markApprovalExpired(item) {
+    try {
+      await apiFetch('/api/approvals/' + encodeURIComponent(item.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'expired' }),
+      });
+      state.approvalDraftReasons.delete(item.id);
+      toast({ type: 'info', title: 'Approval ditandai kedaluwarsa' });
+      await fetchApprovals(true, { notifyNew: false });
+      fetchSharedState(true);
+    } catch (e) {
+      toast({ type: 'error', title: 'Gagal memperbarui status', body: e.message });
+    }
+  }
+
+  async function deleteApprovalItem(item) {
+    try {
+      await apiFetch('/api/approvals/' + encodeURIComponent(item.id), {
+        method: 'DELETE',
+      });
+      state.approvalDraftReasons.delete(item.id);
+      state.expandedApprovalMdIds.delete(item.id);
+      state.expandedApprovalDataIds.delete(item.id);
+      toast({ type: 'info', title: 'Item approval dihapus' });
+      await fetchApprovals(true, { notifyNew: false });
+      fetchSharedState(true);
+    } catch (e) {
+      toast({ type: 'error', title: 'Gagal menghapus item', body: e.message });
     }
   }
 
@@ -2255,18 +2953,33 @@
   /* ---------------- UI Helpers ---------------- */
 
   function switchView(view) {
-    state.view = view === 'history' ? 'history' : 'queue';
+    state.view = view === 'history' ? 'history' : (view === 'approvals' ? 'approvals' : 'queue');
+    const isQueue = state.view === 'queue';
     const isHist = state.view === 'history';
-    $('#view-queue').hidden = isHist;
+    const isAppr = state.view === 'approvals';
+
+    $('#view-queue').hidden = !isQueue;
     $('#view-history').hidden = !isHist;
-    $('#tab-queue').classList.toggle('active', !isHist);
-    $('#tab-queue').setAttribute('aria-selected', String(!isHist));
+    $('#view-approvals').hidden = !isAppr;
+
+    $('#tab-queue').classList.toggle('active', isQueue);
+    $('#tab-queue').setAttribute('aria-selected', String(isQueue));
     $('#tab-history').classList.toggle('active', isHist);
     $('#tab-history').setAttribute('aria-selected', String(isHist));
+    $('#tab-approvals').classList.toggle('active', isAppr);
+    $('#tab-approvals').setAttribute('aria-selected', String(isAppr));
+
     if (isHist) {
       state.historyWorkspace = state.activeWorkspace;
       syncHistoryWorkspaceTabs();
       fetchHistory();
+    } else if (isAppr) {
+      const epEl = $('#appr-endpoint-url');
+      if (epEl) epEl.textContent = 'POST ' + approvalEndpointUrl();
+      const nameEl = $('#appr-analyst-name');
+      if (nameEl && nameEl.value !== state.analystName) nameEl.value = state.analystName;
+      syncApprovalFilterControls();
+      fetchApprovals(false);
     }
   }
 
@@ -2343,6 +3056,7 @@
 
     $('#tab-queue').addEventListener('click', () => switchView('queue'));
     $('#tab-history').addEventListener('click', () => switchView('history'));
+    $('#tab-approvals').addEventListener('click', () => switchView('approvals'));
 
     $('#btn-refresh-shared').addEventListener('click', () => fetchSharedState(false));
 
@@ -2489,6 +3203,38 @@
     $('#hist-filter-mode').addEventListener('change', fetchHistory);
     $('#btn-hist-refresh').addEventListener('click', fetchHistory);
 
+    document.querySelectorAll('.appr-status-btn[data-appr-status]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.approvalStatusFilter = btn.dataset.apprStatus || 'pending';
+        syncApprovalFilterControls();
+        fetchApprovals(false);
+      });
+    });
+
+    let apprSearchTimer = null;
+    $('#appr-search').addEventListener('input', () => {
+      clearTimeout(apprSearchTimer);
+      apprSearchTimer = setTimeout(() => fetchApprovals(false), 200);
+    });
+    $('#appr-filter-ws').addEventListener('change', (e) => {
+      state.approvalWorkspaceFilter = e.target.value || 'all';
+      fetchApprovals(false);
+    });
+    $('#appr-filter-sev').addEventListener('change', (e) => {
+      state.approvalSeverityFilter = e.target.value || '';
+      fetchApprovals(false);
+    });
+    $('#btn-appr-refresh').addEventListener('click', () => fetchApprovals(false));
+    $('#btn-copy-appr-url').addEventListener('click', () => copyText(approvalEndpointUrl(), 'Endpoint Approval'));
+    $('#appr-analyst-name').addEventListener('input', (e) => {
+      state.analystName = e.target.value;
+      persist();
+    });
+    $('#btn-rejection-open-tab').addEventListener('click', () => {
+      state.approvalStatusFilter = 'denied';
+      switchView('approvals');
+    });
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !$('#settings-panel').hidden) {
         e.preventDefault();
@@ -2547,9 +3293,18 @@
     setActiveMode(wsState(state.activeWorkspace).activeMode, { skipPersist: true });
     updateFormLink();
     renderAllCards();
+    updateApprovalTabCounts();
+    const epEl = $('#appr-endpoint-url');
+    if (epEl) epEl.textContent = 'POST ' + approvalEndpointUrl();
+    const nameEl = $('#appr-analyst-name');
+    if (nameEl) nameEl.value = state.analystName;
 
     await fetchSharedState(false);
+    await fetchApprovals(true, { notifyNew: false });
     sharedPollTimer = setInterval(() => fetchSharedState(true), 15000);
+    approvalPollTimer = setInterval(() => {
+      if (state.view === 'approvals') fetchApprovals(true, { notifyNew: true });
+    }, 5000);
 
     for (const ws of ['asoc', 'soc']) {
       for (const card of state.workspaces[ws].cards) {
