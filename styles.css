@@ -1817,6 +1817,11 @@ textarea {
   border-left-color: var(--rose);
 }
 
+.approval-card.appr-revised {
+  border-left-color: var(--accent);
+  opacity: 0.88;
+}
+
 .approval-card.appr-expired {
   border-left-color: var(--muted);
   opacity: 0.85;
@@ -1982,6 +1987,7 @@ textarea {
 .chip.appr-pending { color: var(--amber-text); background: var(--amber-bg); border-color: var(--amber-line); }
 .chip.appr-approved { color: var(--green); background: var(--green-bg); border-color: var(--green-line); }
 .chip.appr-denied { color: var(--rose); background: var(--rose-bg); border-color: var(--rose-line); }
+.chip.appr-revised { color: var(--accent); background: var(--accent-bg); border-color: var(--accent-line); }
 .chip.appr-expired { color: var(--muted); background: var(--surface-2); border-color: var(--line-strong); }
 
 .act-open-approvals {
@@ -2081,6 +2087,21 @@ textarea {
   color: #fecdd3;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.rejection-item-error {
+  margin-top: 4px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--rose-bg);
+  border: 1px solid var(--rose-line);
+  color: #fecdd3;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .rejection-retry-pill {

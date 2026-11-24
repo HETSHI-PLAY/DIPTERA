@@ -429,7 +429,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       const raw = fs.readFileSync(approvalsPath, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
-      const allowedStatus = new Set(['pending', 'approved', 'denied', 'expired']);
+      const allowedStatus = new Set(['pending', 'approved', 'denied', 'revised', 'expired']);
       return parsed.map((item) => ({
         ...item,
         workspace: normalizeWorkspace(item.workspace, 'asoc'),
@@ -461,6 +461,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
   let approvals = loadApprovals();
   let rejections = loadRejections();
   const inFlightDecisions = new Set();
+  const inFlightRejectionResumes = new Set();
   let lock = Promise.resolve();
 
   function withLock(fn) {
@@ -506,7 +507,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
     if (input.source !== undefined) out.source = str(input.source, 64);
     if (input.approvalId !== undefined) out.approvalId = str(input.approvalId, 120);
     if (input.approvalStatus !== undefined) {
-      const allowedAppr = new Set(['pending', 'approved', 'denied', 'expired']);
+      const allowedAppr = new Set(['pending', 'approved', 'denied', 'revised', 'expired']);
       out.approvalStatus = allowedAppr.has(input.approvalStatus) ? input.approvalStatus : null;
     }
     if (input.rejectionId !== undefined) out.rejectionId = str(input.rejectionId, 120);
@@ -606,6 +607,8 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
             retryInMinutes: item.retryInMinutes ?? null,
             nextRetryAt: item.nextRetryAt || null,
             deadlineAt: item.deadlineAt || null,
+            hasResumeUrl: Boolean(item.resumeUrl),
+            lastError: item.lastError || null,
             createdAt: item.createdAt,
           });
         }
@@ -640,23 +643,41 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       item.resolvedReason = resolvedReason || 'resolved';
       item.updatedAt = nowIso;
       rejChanged = true;
-      if (item.approvalId) {
-        const appr = approvals.find((a) => a.id === item.approvalId);
-        if (appr && appr.rejectionStatus !== 'resolved') {
-          appr.rejectionStatus = 'resolved';
-          appr.updatedAt = nowIso;
-          apprChanged = true;
-        }
-      }
+    }
+    for (const appr of approvals) {
+      if (appr.status !== 'denied') continue;
+      const matchAppr = (execId && appr.execId && appr.execId === execId) ||
+        (jobId && appr.jobId && appr.jobId === jobId) ||
+        (irisCaseId && appr.irisCaseId && appr.workspace === ws && appr.irisCaseId === irisCaseId);
+      if (!matchAppr) continue;
+      appr.status = 'revised';
+      appr.rejectionStatus = 'resolved';
+      appr.revisedAt = nowIso;
+      appr.updatedAt = nowIso;
+      apprChanged = true;
     }
     if (rejChanged) saveRejections();
     if (apprChanged) saveApprovals();
-    return rejChanged;
+    return rejChanged || apprChanged;
   }
 
   function recordRejectionInternal(payload = {}) {
     const str = (v, max = 500) => (v == null ? null : String(v).trim().slice(0, max) || null);
     const ws = normalizeWorkspace(payload.workspace, 'asoc');
+    const rawResumeUrl = String(payload.resumeUrl || payload.resume_url || payload.webhookUrl || payload.resumeURL || '').trim();
+    let resumeUrl = null;
+    if (rawResumeUrl) {
+      const parsedResume = parseHttpUrl(rawResumeUrl);
+      if (!parsedResume) {
+        throw Object.assign(new Error('resumeUrl penolakan tidak valid (harus http/https)'), { status: 400 });
+      }
+      if (!isHostAllowed(parsedResume, envCfg.approvalAllowedHosts)) {
+        throw Object.assign(new Error('Host resumeUrl tidak diizinkan oleh APPROVAL_ALLOWED_HOSTS'), { status: 403 });
+      }
+      resumeUrl = parsedResume.toString();
+    }
+    const resumeMethod = String(payload.resumeMethod || payload.resume_method || 'POST').trim().toUpperCase() === 'GET' ? 'GET' : 'POST';
+
     const approvalId = str(payload.approvalId, 120);
     const jobId = str(payload.jobId || payload.dipteraJobId, 120);
     const execId = str(payload.execId || payload.executionId, 120);
@@ -718,9 +739,16 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       retryInMinutes,
       nextRetryAt,
       deadlineAt,
+      resumeUrl,
+      resumeMethod,
+      resumeHttpStatus: null,
+      resumeResponse: null,
+      lastError: null,
       source: str(payload.source, 64) || 'n8n-rejection',
       acknowledgedBy: null,
       acknowledgedAt: null,
+      completedBy: null,
+      completedAt: null,
       resolvedAt: null,
       resolvedReason: null,
       createdAt: now,
@@ -802,6 +830,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       pending: 0,
       approved: 0,
       denied: 0,
+      revised: 0,
       expired: 0,
       total: approvals.length,
       byWorkspace: {
@@ -819,6 +848,8 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         counts.approved++;
       } else if (item.status === 'denied') {
         counts.denied++;
+      } else if (item.status === 'revised') {
+        counts.revised++;
       } else if (item.status === 'expired') {
         counts.expired++;
       }
@@ -1569,9 +1600,13 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         refreshExpiredApprovals();
         const target = approvals.find((x) => x.id === id);
         if (!target) return null;
-        const allowed = new Set(['pending', 'approved', 'denied', 'expired']);
+        const allowed = new Set(['pending', 'approved', 'denied', 'revised', 'expired']);
         if (payload.status !== undefined && allowed.has(payload.status)) {
           target.status = payload.status;
+          if (payload.status === 'revised') {
+            target.revisedAt = new Date().toISOString();
+            target.rejectionStatus = 'resolved';
+          }
         }
         if (payload.lastError !== undefined) {
           target.lastError = payload.lastError == null ? null : String(payload.lastError).slice(0, 500);
@@ -1711,6 +1746,175 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         return {
           ok: true,
           counts: rejectionCounts(),
+        };
+      });
+    },
+
+    async completeRejection(id, payload = {}) {
+      const completedBy = String(payload.completedBy ?? payload.analyst ?? '').trim().slice(0, 120) || null;
+      const skipResume = Boolean(payload.skipResume);
+
+      const prep = await withLock(() => {
+        const record = rejections.find((x) => x.id === id);
+        if (!record) {
+          throw Object.assign(new Error('Notifikasi penolakan tidak ditemukan'), { status: 404 });
+        }
+        if (record.status === 'resolved') {
+          throw Object.assign(new Error('Revisi sudah ditandai selesai sebelumnya'), {
+            status: 409,
+            body: { ok: false, error: 'Revisi sudah ditandai selesai sebelumnya', rejection: record, counts: rejectionCounts() },
+          });
+        }
+        if (inFlightRejectionResumes.has(id)) {
+          throw Object.assign(new Error('Permintaan penyelesaian sedang diproses'), {
+            status: 409,
+            body: { ok: false, error: 'Permintaan penyelesaian sedang diproses', rejection: record, counts: rejectionCounts() },
+          });
+        }
+
+        const needResume = Boolean(record.resumeUrl) && !skipResume;
+        let targetUrl = null;
+        if (needResume) {
+          const wsBase = envCfg.workspaces[normalizeWorkspace(record.workspace, 'asoc')]?.baseUrl;
+          targetUrl = resolveResumeUrl(record.resumeUrl, wsBase, envCfg.approvalRewriteResumeHost);
+          const parsedTarget = parseHttpUrl(targetUrl);
+          if (!parsedTarget) {
+            throw Object.assign(new Error('resumeUrl penolakan tidak valid'), { status: 400 });
+          }
+          if (!isHostAllowed(parsedTarget, envCfg.approvalAllowedHosts)) {
+            throw Object.assign(new Error('Host resumeUrl tidak diizinkan oleh APPROVAL_ALLOWED_HOSTS'), { status: 403 });
+          }
+          targetUrl = parsedTarget.toString();
+          inFlightRejectionResumes.add(id);
+        }
+
+        return {
+          snapshot: { ...record },
+          needResume,
+          targetUrl,
+        };
+      });
+
+      const completedAt = new Date().toISOString();
+      const rec = prep.snapshot;
+      let resp = null;
+      let netErr = null;
+
+      if (prep.needResume) {
+        const rawCaseId = rec.irisCaseId ? String(rec.irisCaseId).replace(/^#+/, '').trim() : null;
+        const webhookPayload = {
+          action: 'revision_completed',
+          event: 'revision_completed',
+          rejectionId: rec.id,
+          approvalId: rec.approvalId || null,
+          completedBy: completedBy || '',
+          completedAt,
+          workspace: rec.workspace,
+          case_id: rawCaseId,
+          caseId: rec.irisCaseId || null,
+          ticketNumber: rec.ticketNumber || null,
+          tenant: rec.tenant || null,
+          jobId: rec.jobId || null,
+        };
+        try {
+          resp = await sendWebhookResume({
+            url: prep.targetUrl,
+            method: rec.resumeMethod || 'POST',
+            payload: webhookPayload,
+            timeoutMs: envCfg.approvalResumeTimeoutMs,
+            allowInsecureTls: envCfg.approvalAllowInsecureTls,
+          });
+        } catch (err) {
+          netErr = err;
+        } finally {
+          inFlightRejectionResumes.delete(id);
+        }
+
+        if (netErr || !resp || resp.statusCode < 200 || resp.statusCode >= 300) {
+          const n8nStatus = resp?.statusCode ?? null;
+          const errMsg = netErr ? netErr.message : `Webhook n8n membalas HTTP ${n8nStatus}`;
+          const expiredHint = [404, 409, 410].includes(n8nStatus);
+          const updatedRecord = await withLock(() => {
+            const target = rejections.find((x) => x.id === id);
+            if (target) {
+              target.resumeHttpStatus = n8nStatus;
+              target.resumeResponse = resp?.body ? String(resp.body).slice(0, 500) : null;
+              target.lastError = errMsg;
+              target.updatedAt = new Date().toISOString();
+              saveRejections();
+            }
+            return target || rec;
+          });
+          throw Object.assign(new Error(errMsg), {
+            status: 502,
+            body: {
+              ok: false,
+              error: errMsg,
+              n8nStatus,
+              expiredHint,
+              rejection: updatedRecord,
+              counts: rejectionCounts(),
+            },
+          });
+        }
+      }
+
+      return withLock(() => {
+        const target = rejections.find((x) => x.id === id);
+        if (!target) throw Object.assign(new Error('Notifikasi penolakan tidak ditemukan'), { status: 404 });
+
+        target.status = 'resolved';
+        target.resolvedReason = skipResume ? 'manual_complete' : 'revision_completed';
+        target.acknowledgedBy = completedBy || target.acknowledgedBy;
+        target.acknowledgedAt = target.acknowledgedAt || completedAt;
+        target.completedBy = completedBy;
+        target.completedAt = completedAt;
+        target.resolvedAt = completedAt;
+        target.resumeHttpStatus = resp?.statusCode ?? null;
+        target.resumeResponse = resp?.body ? String(resp.body).slice(0, 500) : null;
+        target.lastError = null;
+        target.updatedAt = completedAt;
+        saveRejections();
+
+        const ws = normalizeWorkspace(target.workspace, 'asoc');
+        let apprChanged = false;
+        for (const appr of approvals) {
+          const isMatch = (target.approvalId && appr.id === target.approvalId) ||
+            (appr.status === 'denied' && (
+              (target.execId && appr.execId === target.execId) ||
+              (target.jobId && appr.jobId === target.jobId) ||
+              (target.irisCaseId && appr.irisCaseId === target.irisCaseId && appr.workspace === ws)
+            ));
+          if (!isMatch) continue;
+          if (appr.status === 'denied') {
+            appr.status = 'revised';
+            appr.revisedAt = completedAt;
+            appr.revisedBy = completedBy;
+          }
+          appr.rejectionStatus = 'resolved';
+          appr.updatedAt = completedAt;
+          apprChanged = true;
+        }
+        if (apprChanged) saveApprovals();
+
+        let histChanged = false;
+        const hist = target.jobId
+          ? history.find((h) => h.id === target.jobId)
+          : (target.irisCaseId ? history.find((h) => h.workspace === ws && h.irisCaseId === target.irisCaseId) : null);
+        if (hist && hist.approvalStatus === 'denied') {
+          hist.approvalStatus = 'revised';
+          hist.updatedAt = completedAt;
+          histChanged = true;
+        }
+        if (histChanged) saveHistory();
+
+        return {
+          ok: true,
+          resumedN8n: Boolean(prep.needResume),
+          n8nStatus: resp?.statusCode ?? null,
+          rejection: target,
+          counts: rejectionCounts(),
+          approvalCounts: approvalCounts(),
         };
       });
     },
@@ -1948,24 +2152,33 @@ function createServer(options = {}) {
           return sendJson(res, method, 201, result);
         }
         if (pathname.startsWith('/api/rejections/')) {
-          const id = pathname.slice('/api/rejections/'.length);
-          if (!id || id.includes('/')) return sendJson(res, method, 400, { error: 'Invalid rejection ID' });
-          if (method === 'GET') {
-            const record = store.getRejectionById(id);
-            if (!record) return sendJson(res, method, 404, { error: 'Rejection not found' });
-            return sendJson(res, method, 200, { ok: true, rejection: record });
-          }
-          if (method === 'PATCH') {
+          const rest = pathname.slice('/api/rejections/'.length);
+          const parts = rest.split('/').filter(Boolean);
+          if (parts.length === 2 && parts[1] === 'complete' && method === 'POST') {
             const body = await readJsonBody(req);
-            const result = await store.updateRejection(id, body);
-            if (!result) return sendJson(res, method, 404, { error: 'Rejection not found' });
+            const result = await store.completeRejection(parts[0], body);
             return sendJson(res, method, 200, result);
           }
-          if (method === 'DELETE') {
-            const result = await store.deleteRejection(id);
-            if (!result) return sendJson(res, method, 404, { error: 'Rejection not found' });
-            return sendJson(res, method, 200, result);
+          if (parts.length === 1) {
+            const id = parts[0];
+            if (method === 'GET') {
+              const record = store.getRejectionById(id);
+              if (!record) return sendJson(res, method, 404, { error: 'Rejection not found' });
+              return sendJson(res, method, 200, { ok: true, rejection: record });
+            }
+            if (method === 'PATCH') {
+              const body = await readJsonBody(req);
+              const result = await store.updateRejection(id, body);
+              if (!result) return sendJson(res, method, 404, { error: 'Rejection not found' });
+              return sendJson(res, method, 200, result);
+            }
+            if (method === 'DELETE') {
+              const result = await store.deleteRejection(id);
+              if (!result) return sendJson(res, method, 404, { error: 'Rejection not found' });
+              return sendJson(res, method, 200, result);
+            }
           }
+          return sendJson(res, method, 400, { error: 'Invalid rejection endpoint' });
         }
         return sendJson(res, method, 404, { error: 'API endpoint not found' });
       } catch (err) {

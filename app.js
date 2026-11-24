@@ -246,7 +246,7 @@
     const diffMs = targetMs - Date.now();
     if (diffMs <= 0) return 'Menunggu jadwal ulang…';
     const min = Math.max(1, Math.ceil(diffMs / 60000));
-    return `Approval ulang dalam ${min}m`;
+    return `Auto ulang ${min}m`;
   }
 
   function cleanCaseIdDigits(val) {
@@ -2151,7 +2151,7 @@
           : `<span class="mono">${esc(formatCaseIdBadge(item.irisCaseId))}</span>`)
         : '<span class="field-hint">—</span>';
 
-      const apprLabels = { pending: 'Approval', approved: 'Approved', denied: 'Denied', expired: 'Expired' };
+      const apprLabels = { pending: 'Approval', approved: 'Approved', denied: 'Denied', revised: 'Diperbaiki', expired: 'Expired' };
       const apprBadge = item.approvalStatus
         ? ` <span class="chip appr-${esc(item.approvalStatus)}">${esc(apprLabels[item.approvalStatus] || item.approvalStatus)}</span>`
         : '';
@@ -2214,6 +2214,7 @@
     pending: 'Menunggu',
     approved: 'Disetujui',
     denied: 'Ditolak',
+    revised: 'Diperbaiki',
     expired: 'Kedaluwarsa',
   };
 
@@ -2439,7 +2440,7 @@
 
       const auditActionLabel = item.status === 'approved'
         ? 'Disetujui'
-        : (item.status === 'denied' ? 'Ditolak' : 'Kedaluwarsa');
+        : (item.status === 'denied' ? 'Ditolak' : (item.status === 'revised' ? 'Diperbaiki' : 'Kedaluwarsa'));
       const auditMetaParts = [
         auditActionLabel,
         item.decidedBy ? `oleh ${item.decidedBy}` : '',
@@ -2453,7 +2454,7 @@
           const retryLabel = fmtRetryCountdown(item.nextRetryAt);
           rejectionInlineHtml = `
             <span class="approval-kv-row" style="margin-top: 4px;">
-              ${retryLabel ? `<span class="rejection-retry-pill">${esc(retryLabel)}</span>` : ''}
+              ${retryLabel ? `<span class="rejection-retry-pill" title="n8n otomatis meminta approval ulang, atau klik Tandai Selesai untuk langsung meminta approval sekarang">${esc(retryLabel)}</span>` : ''}
             </span>`;
         } else if (item.rejectionStatus === 'acknowledged') {
           rejectionInlineHtml = '<span class="chip appr-approved" style="align-self: flex-start; margin-top: 4px;">Sudah ditangani</span>';
@@ -2531,7 +2532,7 @@
               ${rejectionInlineHtml}
             </div>
             <div class="hist-actions">
-              ${item.status === 'denied' && item.rejectionId && item.rejectionStatus === 'open' ? '<button class="btn ghost btn-xs act-appr-ack-rej" type="button">Tandai Ditangani</button>' : ''}
+              ${item.status === 'denied' ? '<button class="btn accent btn-xs act-appr-complete-rej" type="button" title="Perbaikan selesai — langsung minta approval ulang & hapus dari daftar Ditolak">Tandai Selesai</button>' : ''}
               ${item.status === 'denied' && itemWs === 'asoc' ? '<button class="btn ghost btn-xs act-appr-repeat" type="button">Ulangi (Repeat)</button>' : ''}
               <button class="btn ghost btn-xs act-appr-delete" type="button">Hapus</button>
             </div>
@@ -2588,9 +2589,12 @@
         deleteBtn.addEventListener('click', () => deleteApprovalItem(item));
       }
 
-      const ackRejBtn = $('.act-appr-ack-rej', cardEl);
-      if (ackRejBtn && item.rejectionId) {
-        ackRejBtn.addEventListener('click', () => acknowledgeRejection(item.rejectionId));
+      const completeRejBtn = $('.act-appr-complete-rej', cardEl);
+      if (completeRejBtn) {
+        completeRejBtn.addEventListener('click', () => {
+          if (item.rejectionId) completeRejection(item.rejectionId, completeRejBtn);
+          else markApprovalRevised(item.id, completeRejBtn);
+        });
       }
 
       const repeatRejBtn = $('.act-appr-repeat', cardEl);
@@ -2674,15 +2678,21 @@
               : `<span class="mono">${esc(formatCaseIdBadge(item.irisCaseId))}</span>`) : ''}
             ${item.clientName || item.tenant ? `<span>${esc(item.clientName || item.tenant)}</span>` : ''}
             ${item.decidedBy ? `<span>Reviewer: <strong>${esc(item.decidedBy)}</strong></span>` : ''}
-            ${retryText ? `<span class="rejection-retry-pill">${esc(retryText)}</span>` : ''}
+            ${retryText ? `<span class="rejection-retry-pill" title="n8n otomatis meminta approval ulang, atau klik Tandai Selesai untuk langsung meminta approval sekarang">${esc(retryText)}</span>` : ''}
           </div>
           <div class="rejection-item-title">${esc(item.caseName || 'Case Ditolak')}</div>
           <div class="rejection-item-reason">Alasan: ${esc(item.reason || 'Tidak ada alasan yang diberikan.')}</div>
+          ${item.lastError ? `
+            <div class="rejection-item-error">
+              <span>Gagal resume n8n: ${esc(item.lastError)}</span>
+              <button class="btn ghost btn-xs act-rej-skip-resume" type="button">Selesai Tanpa Resume n8n</button>
+            </div>
+          ` : ''}
         </div>
         <div class="rejection-item-actions">
           ${caseHref ? `<a class="btn ghost btn-xs" href="${esc(caseHref)}" target="_blank" rel="noopener">Buka IRIS ↗</a>` : ''}
           ${itemWs === 'asoc' ? '<button class="btn ghost btn-xs act-rej-repeat" type="button">Ulangi (Repeat)</button>' : ''}
-          <button class="btn ghost btn-xs act-rej-ack" type="button">Tandai Ditangani</button>
+          <button class="btn accent btn-xs act-rej-complete" type="button" title="Perbaikan selesai — langsung minta approval ulang">Tandai Selesai</button>
         </div>
       `;
 
@@ -2696,31 +2706,86 @@
         }));
       }
 
-      const ackBtn = $('.act-rej-ack', row);
-      if (ackBtn) {
-        ackBtn.addEventListener('click', () => acknowledgeRejection(item.id));
+      const completeBtn = $('.act-rej-complete', row);
+      if (completeBtn) {
+        completeBtn.addEventListener('click', () => completeRejection(item.id, completeBtn));
+      }
+
+      const skipResumeBtn = $('.act-rej-skip-resume', row);
+      if (skipResumeBtn) {
+        skipResumeBtn.addEventListener('click', () => completeRejection(item.id, skipResumeBtn, { skipResume: true }));
       }
 
       listEl.appendChild(row);
     }
   }
 
-  async function acknowledgeRejection(rejectionId) {
+  async function completeRejection(rejectionId, triggerBtn, opts = {}) {
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = 'Mengirim…';
+    }
     try {
-      await apiFetch('/api/rejections/' + encodeURIComponent(rejectionId), {
-        method: 'PATCH',
+      const resp = await apiFetch('/api/rejections/' + encodeURIComponent(rejectionId) + '/complete', {
+        method: 'POST',
         body: JSON.stringify({
-          status: 'acknowledged',
-          acknowledgedBy: state.analystName.trim() || null,
+          completedBy: state.analystName.trim() || null,
+          skipResume: Boolean(opts.skipResume),
         }),
       });
-      toast({ type: 'info', title: 'Notifikasi penolakan ditandai selesai' });
+      if (resp?.resumedN8n) {
+        toast({
+          type: 'success',
+          title: 'Revisi selesai — meminta approval ulang',
+          body: 'Workflow n8n langsung dilanjutkan untuk meminta approval baru.',
+        });
+      } else {
+        toast({
+          type: 'info',
+          title: 'Case ditandai selesai',
+          body: 'Item telah dipindahkan dari daftar Ditolak.',
+        });
+      }
+      await fetchSharedState(true);
+      if (state.view === 'approvals') {
+        await fetchApprovals(true, { notifyNew: false });
+      }
+      if (resp?.resumedN8n) {
+        setTimeout(() => {
+          fetchSharedState(true);
+          if (state.view === 'approvals') fetchApprovals(true, { notifyNew: false });
+        }, 1500);
+        setTimeout(() => {
+          fetchSharedState(true);
+          if (state.view === 'approvals') fetchApprovals(true, { notifyNew: false });
+        }, 3500);
+      }
+    } catch (e) {
+      toast({ type: 'error', title: 'Gagal menyelesaikan revisi', body: e.message });
+      await fetchSharedState(true);
+      if (state.view === 'approvals') {
+        await fetchApprovals(true, { notifyNew: false });
+      }
+    }
+  }
+
+  async function markApprovalRevised(approvalId, triggerBtn) {
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = 'Menyimpan…';
+    }
+    try {
+      await apiFetch('/api/approvals/' + encodeURIComponent(approvalId), {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'revised' }),
+      });
+      toast({ type: 'info', title: 'Case ditandai selesai', body: 'Item telah dihapus dari daftar Ditolak.' });
       await fetchSharedState(true);
       if (state.view === 'approvals') {
         await fetchApprovals(true, { notifyNew: false });
       }
     } catch (e) {
-      toast({ type: 'error', title: 'Gagal menandai penolakan', body: e.message });
+      toast({ type: 'error', title: 'Gagal menandai selesai', body: e.message });
     }
   }
 

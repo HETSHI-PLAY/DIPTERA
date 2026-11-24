@@ -220,7 +220,8 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     assert.equal(mockWebhookCalls[1].body.approved, false);
     assert.equal(mockWebhookCalls[1].body['Approval Status'], '❌ Decline');
 
-    // Diptera - Inform Rejection webhook call -> POST /api/rejections
+    // Diptera - Inform Rejection webhook call -> POST /api/rejections (with resumeUrl)
+    const rejResumeUrl1 = `${mockBase}/webhook-waiting/rej-rev-202`;
     const rejCreate1 = await req(port, 'POST', '/api/rejections', {
       workspace: 'asoc',
       approvalId: apr2Id,
@@ -237,12 +238,18 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       reason: 'Perlu lengkapi bagian rekomendasi',
       decidedBy: 'Ani',
       retryInMinutes: 10,
+      resumeUrl: rejResumeUrl1,
+      resumeMethod: 'POST',
     });
     assert.equal(rejCreate1.status, 201);
     assert.equal(rejCreate1.json.ok, true);
     assert.equal(rejCreate1.json.case_id, '413');
     const rej1Id = rejCreate1.json.rejection.id;
     assert.equal(rejCreate1.json.rejection.status, 'open');
+
+    const deniedListBefore = await req(port, 'GET', '/api/approvals?status=denied');
+    assert.equal(deniedListBefore.json.counts.denied, 1);
+    assert.ok(deniedListBefore.json.items.some((x) => x.id === apr2Id));
 
     const rejectionsFile = JSON.parse(fs.readFileSync(path.join(tmpDir, 'rejections.json'), 'utf8'));
     assert.equal(rejectionsFile.length, 1);
@@ -251,6 +258,7 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     const stRej1 = await req(port, 'GET', '/api/state');
     assert.equal(stRej1.json.rejections.open, 1);
     assert.equal(stRej1.json.rejections.openItems[0].id, rej1Id);
+    assert.equal(stRej1.json.rejections.openItems[0].hasResumeUrl, true);
 
     const apr2Linked = await req(port, 'GET', `/api/approvals/${apr2Id}`);
     assert.equal(apr2Linked.json.approval.rejectionId, rej1Id);
@@ -260,18 +268,71 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     assert.equal(histRejLinked.json.record.rejectionId, rej1Id);
     assert.equal(histRejLinked.json.record.rejectionReason, 'Perlu lengkapi bagian rekomendasi');
 
-    // Acknowledge rejection
-    const ackRes = await req(port, 'PATCH', `/api/rejections/${rej1Id}`, {
-      status: 'acknowledged',
-      acknowledgedBy: 'Analis-1',
+    // "Tandai Selesai" -> POST /api/rejections/:id/complete triggers immediate n8n resume & removes from Ditolak
+    const completeRes = await req(port, 'POST', `/api/rejections/${rej1Id}/complete`, {
+      completedBy: 'Analis-1',
     });
-    assert.equal(ackRes.status, 200);
-    assert.equal(ackRes.json.rejection.status, 'acknowledged');
-    assert.equal(ackRes.json.rejection.acknowledgedBy, 'Analis-1');
-    const stRejAfterAck = await req(port, 'GET', '/api/state');
-    assert.equal(stRejAfterAck.json.rejections.open, 0);
-    const apr2AfterAck = await req(port, 'GET', `/api/approvals/${apr2Id}`);
-    assert.equal(apr2AfterAck.json.approval.rejectionStatus, 'acknowledged');
+    assert.equal(completeRes.status, 200);
+    assert.equal(completeRes.json.ok, true);
+    assert.equal(completeRes.json.resumedN8n, true);
+    assert.equal(completeRes.json.rejection.status, 'resolved');
+    assert.equal(completeRes.json.rejection.completedBy, 'Analis-1');
+
+    const revCall = mockWebhookCalls[mockWebhookCalls.length - 1];
+    assert.equal(revCall.method, 'POST');
+    assert.equal(revCall.pathname, '/webhook-waiting/rej-rev-202');
+    assert.equal(revCall.body.action, 'revision_completed');
+    assert.equal(revCall.body.completedBy, 'Analis-1');
+
+    const stRejAfterComplete = await req(port, 'GET', '/api/state');
+    assert.equal(stRejAfterComplete.json.rejections.open, 0);
+    assert.equal(stRejAfterComplete.json.approvals.denied, 0);
+    assert.equal(stRejAfterComplete.json.approvals.revised, 1);
+
+    const deniedListAfter = await req(port, 'GET', '/api/approvals?status=denied');
+    assert.equal(deniedListAfter.json.items.length, 0);
+
+    const apr2AfterComplete = await req(port, 'GET', `/api/approvals/${apr2Id}`);
+    assert.equal(apr2AfterComplete.json.approval.status, 'revised');
+    assert.equal(apr2AfterComplete.json.approval.rejectionStatus, 'resolved');
+
+    // Double complete returns 409 Conflict
+    const doubleComplete = await req(port, 'POST', `/api/rejections/${rej1Id}/complete`, { completedBy: 'Analis-2' });
+    assert.equal(doubleComplete.status, 409);
+
+    // Fallback when n8n returns 404 on complete -> 502 expiredHint -> skipResume: true succeeds
+    const aprFallbackCreate = await req(port, 'POST', '/api/approvals', {
+      resumeUrl: `${mockBase}/webhook-waiting/exec-fb-205`,
+      execId: '205',
+      caseId: 414,
+      caseName: '[LOW] Fallback Revision Test',
+    });
+    const aprFbId = aprFallbackCreate.json.approval.id;
+    await req(port, 'POST', `/api/approvals/${aprFbId}/decide`, { decision: 'deny', reason: 'Cek ulang' });
+    const rejFbCreate = await req(port, 'POST', '/api/rejections', {
+      workspace: 'asoc',
+      approvalId: aprFbId,
+      execId: '205',
+      caseId: 414,
+      reason: 'Cek ulang',
+      resumeUrl: `${mockBase}/webhook-waiting/rej-fb-gone`,
+    });
+    const rejFbId = rejFbCreate.json.rejection.id;
+
+    mockBehavior = { status: 404, body: { message: 'Execution gone' } };
+    const fbFail = await req(port, 'POST', `/api/rejections/${rejFbId}/complete`, { completedBy: 'Analis-1' });
+    assert.equal(fbFail.status, 502);
+    assert.equal(fbFail.json.expiredHint, true);
+
+    const fbSkip = await req(port, 'POST', `/api/rejections/${rejFbId}/complete`, {
+      completedBy: 'Analis-1',
+      skipResume: true,
+    });
+    assert.equal(fbSkip.status, 200);
+    assert.equal(fbSkip.json.resumedN8n, false);
+    assert.equal(fbSkip.json.rejection.status, 'resolved');
+    assert.equal((await req(port, 'GET', '/api/approvals?status=denied')).json.counts.denied, 0);
+    mockBehavior = { status: 200, body: { resumed: true } };
 
     // Second open rejection should auto-resolve when re-approval request arrives
     const rejCreate2 = await req(port, 'POST', '/api/rejections', {
@@ -286,7 +347,7 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     const rej2Id = rejCreate2.json.rejection.id;
     assert.equal((await req(port, 'GET', '/api/state')).json.rejections.open, 1);
 
-    // Re-approval request after Wait 10 Minutes with same execId & resumeUrl
+    // Re-approval request after Wait Revision or 10 Minutes with same execId & resumeUrl
     const reapproval = await req(port, 'POST', '/api/approvals', {
       resumeUrl: resumeUrl2,
       execId: '202',
@@ -392,7 +453,8 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     assert.ok(jsRes.text.includes('submitApprovalDecision'));
     assert.ok(jsRes.text.includes('renderApprovalsList'));
     assert.ok(jsRes.text.includes('renderRejectionBanner'));
-    assert.ok(jsRes.text.includes('acknowledgeRejection'));
+    assert.ok(jsRes.text.includes('completeRejection'));
+    assert.ok(jsRes.text.includes('markApprovalRevised'));
 
     const cssRes = await req(port, 'GET', '/styles.css');
     assert.equal(cssRes.status, 200);
@@ -425,6 +487,16 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       assert.equal(rejNode.type, 'n8n-nodes-base.httpRequest');
       assert.equal(rejNode.parameters.method, 'POST');
       assert.ok(String(rejNode.parameters.url).includes('/api/rejections'));
+      assert.ok(String(rejNode.parameters.jsonBody).includes('$execution.resumeUrl'));
+
+      assert.equal(byName.has('Wait 10 Minutes'), false, 'Wait 10 Minutes must be renamed to Wait Revision or 10 Minutes');
+      const waitRevNode = byName.get('Wait Revision or 10 Minutes');
+      assert.ok(waitRevNode, 'Wait Revision or 10 Minutes must exist');
+      assert.equal(waitRevNode.type, 'n8n-nodes-base.wait');
+      assert.equal(waitRevNode.parameters.resume, 'webhook');
+      assert.equal(waitRevNode.parameters.httpMethod, 'POST');
+      assert.equal(waitRevNode.parameters.limitWaitTime, true);
+      assert.equal(waitRevNode.parameters.limitType, 'atSpecifiedTime');
 
       assert.ok(String(getDetailsNode.parameters.url).includes("$('Set Approval Deadline').first().json.case_id"));
 
@@ -432,9 +504,11 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       assert.equal(wf.connections['Diptera - Send Approval Request'].main[0][0].node, 'Diptera - Wait Approval');
       assert.equal(wf.connections['Diptera - Wait Approval'].main[0][0].node, 'If Approval Timed Out');
       assert.equal(wf.connections['If Case Approved'].main[1][0].node, 'Diptera - Inform Rejection');
-      assert.equal(wf.connections['Diptera - Inform Rejection'].main[0][0].node, 'Wait 10 Minutes');
+      assert.equal(wf.connections['Diptera - Inform Rejection'].main[0][0].node, 'Wait Revision or 10 Minutes');
+      assert.equal(wf.connections['Wait Revision or 10 Minutes'].main[0][0].node, 'If Approval Deadline Reached');
       assert.equal(wf.connections['Telegram - Ask Approval'], undefined);
       assert.equal(wf.connections['Telegram - Inform Rejection'], undefined);
+      assert.equal(wf.connections['Wait 10 Minutes'], undefined);
 
       for (const [src, val] of Object.entries(wf.connections)) {
         assert.ok(byName.has(src), `Missing source node: ${src}`);
@@ -463,6 +537,89 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
 
       assert.equal(evalExpr(approvedExpr, waitApprove), true);
       assert.equal(evalExpr(approvedExpr, waitDeny), false);
+
+      // Verify Auto-Archive Raw Alert JSON to Google Drive branch & execute Code nodes
+      assert.equal(byName.has('Resolve Raw Alert Folder'), true);
+      assert.equal(byName.has('Upload Raw Alert JSON to Drive'), true);
+      const rawResolveNode = byName.get('Resolve Raw Alert Folder');
+      const rawUploadNode = byName.get('Upload Raw Alert JSON to Drive');
+      assert.equal(rawResolveNode.type, 'n8n-nodes-base.code');
+      assert.ok(rawResolveNode.parameters.jsCode.includes('1pTE3ltkZescxA2CxY5YyzLzxAqB14b00'), 'Existing tenant Folder ID must remain intact');
+      assert.equal(rawUploadNode.type, 'n8n-nodes-base.httpRequest');
+      assert.equal(rawUploadNode.parameters.method, 'POST');
+      assert.equal(rawUploadNode.credentials?.googleDriveOAuth2Api?.id, '7f0cCrwdCRPYfXFT');
+      assert.equal(rawUploadNode.onError, 'continueRegularOutput');
+
+      const fcnTargets = wf.connections['Format Case Name'].main[0].map((e) => e.node);
+      assert.ok(fcnTargets.includes('If Create IRIS Case'));
+      assert.ok(fcnTargets.includes('Resolve Raw Alert Folder'));
+      assert.equal(wf.connections['Resolve Raw Alert Folder'].main[0][0].node, 'Upload Raw Alert JSON to Drive');
+
+      const rawWazuhSample = {
+        _index: 'wazuh-alerts-4.x-2026.11.24',
+        _id: 'raw_evt_9988',
+        timestamp: '2026-11-24T01:00:00.000+0000',
+        manager: { name: 'wazuh-mgr-01' },
+        decoder: { name: 'json', parent: 'web-accesslog' },
+        agent: { id: '015', name: 'pradita-web-01', ip: '10.20.30.40' },
+        rule: { id: '31106', level: 10, description: 'SQL injection attempt', groups: ['web', 'attack'] },
+        data: { srcip: '203.0.113.55', custom_raw_field: 'keep-me-intact' },
+        full_log: 'GET /login?id=1%27%20OR%201=1--',
+      };
+
+      const triggerItem = {
+        'field-0': 'ASOC-2026-10001',
+        'field-1': 'praditauniversity',
+        'field-2': '',
+        'field-3': JSON.stringify(rawWazuhSample),
+      };
+
+      const runN8nCode = (code, inputItem, nodeOutputs = {}) => {
+        const $ = (name) => ({
+          first: () => ({ json: nodeOutputs[name] || {} }),
+          item: { json: nodeOutputs[name] || {} },
+        });
+        const $input = {
+          first: () => ({ json: inputItem, binary: {} }),
+          item: { json: inputItem, binary: {} },
+        };
+        return Function('$input', '$', code)($input, $);
+      };
+
+      const pvCode = byName.get('Parse & Validate Alert JSON').parameters.jsCode;
+      const pvOut = runN8nCode(pvCode, triggerItem);
+      assert.ok(Array.isArray(pvOut) && pvOut.length === 1);
+      assert.equal(typeof pvOut[0].json.rawParsedAlertJson, 'string');
+      const parsedSnapshot = JSON.parse(pvOut[0].json.rawParsedAlertJson);
+      assert.equal(parsedSnapshot._index, 'wazuh-alerts-4.x-2026.11.24');
+      assert.equal(parsedSnapshot._id, 'raw_evt_9988');
+      assert.equal(parsedSnapshot.manager.name, 'wazuh-mgr-01');
+      assert.equal(parsedSnapshot.decoder.name, 'json');
+      assert.equal(parsedSnapshot.data.custom_raw_field, 'keep-me-intact');
+
+      const fcnCode = byName.get('Format Case Name').parameters.jsCode;
+      const fcnOut = runN8nCode(fcnCode, pvOut[0].json, {
+        'Alert Form Trigger': triggerItem,
+        'Parse & Validate Alert JSON': pvOut[0].json,
+      });
+      assert.equal(fcnOut[0].json.rawParsedAlertJson, undefined, 'Format Case Name must strip rawParsedAlertJson from downstream nodes');
+      assert.equal(fcnOut[0].json.reportNumber, 'ASOC-2026-10001');
+
+      const rrafOut = runN8nCode(rawResolveNode.parameters.jsCode, fcnOut[0].json, {
+        'Alert Form Trigger': triggerItem,
+        'Parse & Validate Alert JSON': pvOut[0].json,
+        'Format Case Name': fcnOut[0].json,
+      });
+      assert.equal(rrafOut[0].json.rawAlertFileName, 'Pradita_ASOC-2026-10001.json');
+      assert.equal(rrafOut[0].json.resolvedTenant, 'Pradita');
+      const praditaMatch = rawResolveNode.parameters.jsCode.match(/praditauniversity:\s*'([^']+)'/);
+      const expectedPraditaFolder = praditaMatch && !praditaMatch[1].startsWith('FOLDER_ID_') ? praditaMatch[1] : null;
+      assert.equal(rrafOut[0].json.resolvedFolderId, expectedPraditaFolder);
+      const multipartDecoded = Buffer.from(rrafOut[0].binary.data.data, 'base64').toString('utf8');
+      assert.ok(multipartDecoded.includes('"name":"Pradita_ASOC-2026-10001.json"'));
+      assert.ok(multipartDecoded.includes('"mimeType":"application/json"'));
+      assert.ok(multipartDecoded.includes('"custom_raw_field": "keep-me-intact"'));
+      assert.ok(multipartDecoded.includes('"wazuh-alerts-4.x-2026.11.24"'));
     }
 
     console.log('ALL_APPROVAL_TESTS_PASSED (8/8)');
