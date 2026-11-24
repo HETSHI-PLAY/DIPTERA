@@ -69,6 +69,8 @@ const APP_FILES = {
   '/extract.js': 'extract.js',
   '/numbering.js': 'numbering.js',
   '/config.js': 'config.js',
+  '/favicon.svg': 'favicon.svg',
+  '/favicon.ico': 'favicon.svg',
 };
 
 const MIME = {

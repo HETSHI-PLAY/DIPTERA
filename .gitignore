@@ -32,8 +32,13 @@ npm-debug.log*
 *.bak
 *.orig
 *.swp
+*.tmp
+*.temp
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+coverage/
 
 # Local n8n Workflows & Internal Docs
 Alpha Reporter v2 (1).json
@@ -41,3 +46,20 @@ Alpha Reporter*.json
 *.workflow.json
 update.md
 finding.md
+
+# AI Agent Skills, Lockfiles & Scratch Artifacts
+.agents/
+.agent/
+skills-lock.json
+skill-lock.json
+.claude/
+.codex/
+.cursor/
+.opencode/
+.gemini/
+.taste-skill/
+.hallmark/
+.impeccable/
+unslop/
+unslop-story/
+shots/

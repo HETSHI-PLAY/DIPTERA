@@ -96,7 +96,7 @@
     return [
       {
         key: 'field-0',
-        label: 'Nomor Tiket IRIS (Opsional)',
+        label: 'Nomor Tiket',
         type: 'text',
         placeholder: ws === 'soc' ? 'Mis. 10101' : 'Mis. 30073',
         role: 'ticket',
@@ -122,7 +122,7 @@
         type: 'textarea',
         required: true,
         json: true,
-        placeholder: 'Tempel satu/beberapa alert JSON (NDJSON juga boleh) atau respons OpenSearch hits.hits.',
+        placeholder: 'Tempel alert JSON atau NDJSON…',
         role: 'alert',
       },
     ];
@@ -558,22 +558,25 @@
     state.currentUser = user || null;
 
     const topbar = $('.topbar');
+    const appShell = $('#app-shell');
     const mainEl = $('main');
     const authScreen = $('#auth-screen');
     const userBar = $('#user-bar');
     const openFromSettingsBtn = $('#btn-open-user-modal-from-settings');
     const umTabUsers = $('#um-tab-users');
+    const navUsersBtn = $('#nav-users');
     const analystInput = $('#appr-analyst-name');
     const reviewerPill = $('#appr-reviewer-pill');
 
     const lockedOut = state.authEnabled && !state.currentUser;
     if (authScreen) authScreen.hidden = !lockedOut;
     if (topbar) topbar.hidden = lockedOut;
+    if (appShell) appShell.hidden = lockedOut;
     if (mainEl) mainEl.hidden = lockedOut;
 
     if (lockedOut) {
       if ($('#user-modal')) $('#user-modal').hidden = true;
-      if ($('#settings-panel')) $('#settings-panel').hidden = true;
+      if ($('#view-settings')) $('#view-settings').hidden = true;
       const uInp = $('#login-username');
       if (uInp) setTimeout(() => uInp.focus(), 30);
       return;
@@ -593,6 +596,7 @@
       }
       if (openFromSettingsBtn) openFromSettingsBtn.hidden = false;
       if (umTabUsers) umTabUsers.hidden = u.role !== 'admin';
+      if (navUsersBtn) navUsersBtn.hidden = u.role !== 'admin';
       state.analystName = display;
       if (analystInput) analystInput.hidden = true;
       if (reviewerPill) {
@@ -603,6 +607,7 @@
       if (userBar) userBar.hidden = true;
       if (openFromSettingsBtn) openFromSettingsBtn.hidden = true;
       if (umTabUsers) umTabUsers.hidden = true;
+      if (navUsersBtn) navUsersBtn.hidden = true;
       if (analystInput) analystInput.hidden = false;
       if (reviewerPill) reviewerPill.hidden = true;
     }
@@ -969,7 +974,7 @@
 
   function updateHistoryTabCounts() {
     const activeWs = state.activeWorkspace;
-    $('#tab-history-label').textContent = 'Riwayat ' + WORKSPACE_META[activeWs].code;
+    $('#tab-history-label').textContent = 'Riwayat';
     $('#tab-history-count').textContent = String(state.historyCounts[activeWs] ?? 0);
     $('#hist-count-asoc').textContent = String(state.historyCounts.asoc ?? 0);
     $('#hist-count-soc').textContent = String(state.historyCounts.soc ?? 0);
@@ -1147,7 +1152,7 @@
         required: false,
         canOverride: true,
         autoLabel: 'Otomatis dari IRIS',
-        hint: 'Nomor Case ID diambil otomatis setelah Alpha Reporter membuat case di IRIS.',
+        hint: '',
       };
     }
     return {
@@ -1247,10 +1252,11 @@
     $('#repeat-panel').hidden = !(meta.hasRepeating && wsState(ws).activeMode === 'repeating');
 
     $('#empty-state-desc').textContent = ws === 'asoc'
-      ? 'Tambahkan form baru dalam mode Reporting atau Repeating, atau ulangi langsung dari Riwayat ASOC.'
-      : 'Tambahkan form baru untuk Charlie Reporter, atau duplikat ulang dari Riwayat SOC.';
+      ? 'Tambahkan form baru, atau ulangi laporan dari Riwayat.'
+      : 'Tambahkan form baru, atau duplikat laporan dari Riwayat SOC.';
 
     updateWorkspaceBadges();
+    updateViewHeading();
   }
 
   function updateWorkspaceBadges() {
@@ -1291,7 +1297,7 @@
     populateHistoryTenantFilter();
     renderAllCards();
 
-    if (!$('#settings-panel').hidden) {
+    if (state.view === 'settings') {
       fillSettingsForm(ws);
     }
     if (state.view === 'history') {
@@ -1361,6 +1367,7 @@
     }
     recomputeQueueTickets(ws, { noPersist: true });
     updateToolbar();
+    updateViewHeading();
     if (!opts.skipPersist) persist();
   }
 
@@ -1546,6 +1553,7 @@
         const msg = document.createElement('div');
         msg.className = 'field-msg auto';
         msg.textContent = caseSpec.hint;
+        msg.hidden = !caseSpec.hint;
         wrap.appendChild(msg);
         r.msgs[field.key] = msg;
         r.fieldsWrap.appendChild(wrap);
@@ -1595,6 +1603,7 @@
       const msg = document.createElement('div');
       msg.className = 'field-msg';
       if (isCaseId && caseSpec.hint) msg.textContent = caseSpec.hint;
+      msg.hidden = Boolean(isCaseId && !caseSpec.hint);
 
       control.addEventListener('input', () => onFieldChange(card, field, control, msg));
       control.addEventListener('change', () => onFieldChange(card, field, control, msg));
@@ -1673,7 +1682,8 @@
       const manualCid = readVal(card, 'caseId', ws);
       if (manualCid) summaryParts.push(formatCaseIdBadge(manualCid));
     }
-    r.summary.textContent = summaryParts.join(' · ') || 'Belum diisi';
+    r.summary.textContent = summaryParts.join(' · ');
+    r.summary.hidden = summaryParts.length === 0;
 
     const resolvedCid = card.irisCaseId || card.result?.caseId;
     if (resolvedCid) {
@@ -2815,8 +2825,8 @@
         ? 'Tidak ada approval yang cocok dengan filter'
         : (titleMap[state.approvalStatusFilter] || titleMap.all);
       $('#approvals-empty-desc').textContent = hasFilters
-        ? 'Coba ubah kata kunci pencarian atau filter workspace/severity.'
-        : 'Permintaan approval dari workflow n8n (HTTP Request POST + Node Wait) akan terkumpul di sini.';
+        ? 'Ubah kata kunci atau filter workspace/severity.'
+        : 'Permintaan approval dari workflow n8n akan terkumpul di sini.';
       return;
     }
 
@@ -2932,7 +2942,7 @@
             ` : ''}
             <div class="approval-decision-controls">
               <div class="approval-reason-wrap">
-                <label class="field-label" for="appr-reason-${esc(item.id)}">Catatan / Alasan (dikirim ke workflow n8n)</label>
+                <label class="field-label" for="appr-reason-${esc(item.id)}">Catatan (opsional)</label>
                 <textarea id="appr-reason-${esc(item.id)}" class="appr-reason-input" rows="2" placeholder="Opsional saat Approve; jelaskan alasan jika Deny…"></textarea>
               </div>
               <div class="approval-decision-btns">
@@ -3097,11 +3107,20 @@
       return;
     }
 
-    banner.hidden = false;
     countEl.textContent = String(state.rejectionCounts?.open || items.length);
 
-    if (state.lastRejectionBannerSig === nextSig && listEl.children.length === items.length) {
-      for (const item of items) {
+    const prevSig = state.lastRejectionBannerSig;
+    state.lastRejectionBannerSig = nextSig;
+    if (state.view === 'approvals' || state.rejectionDismissedSig === nextSig) {
+      banner.hidden = true;
+      return;
+    }
+
+    banner.hidden = false;
+    const visibleItems = items.slice(0, 1);
+
+    if (prevSig === nextSig && listEl.children.length === visibleItems.length) {
+      for (const item of visibleItems) {
         const row = listEl.querySelector(`.rejection-item[data-rej-id="${(typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(item.id) : item.id}"]`);
         const retryEl = row ? $('.rejection-retry-pill', row) : null;
         if (retryEl && item.nextRetryAt) {
@@ -3112,10 +3131,9 @@
       return;
     }
 
-    state.lastRejectionBannerSig = nextSig;
     const frag = document.createDocumentFragment();
 
-    for (const item of items) {
+    for (const item of visibleItems) {
       const itemWs = item.workspace === 'soc' ? 'soc' : 'asoc';
       const caseHref = safeExternalHref(item.caseUrl) || irisCaseLink(item.irisCaseId, itemWs);
       const retryText = fmtRetryCountdown(item.nextRetryAt);
@@ -3379,7 +3397,7 @@
     row.className = 'tenant-row';
     row.innerHTML = `
       <input type="text" class="t-name" aria-label="Nama tenant" placeholder="Nama tenant" value="${esc(name)}" spellcheck="false" />
-      <input type="text" class="t-num" aria-label="Nomor tiket terakhir" placeholder="Nomor tiket terakhir" value="${esc(ticketNum)}" spellcheck="false" />
+      <input type="text" class="t-num" aria-label="Nomor tiket terakhir" placeholder="Nomor tiket" value="${esc(ticketNum)}" spellcheck="false" />
       <button class="tenant-del" type="button" title="Hapus tenant">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M18 6L6 18M6 6l12 12" />
@@ -3468,22 +3486,65 @@
         refreshCard(card);
       }
     }
-    $('#settings-panel').hidden = true;
-    $('#btn-settings').setAttribute('aria-expanded', 'false');
     persist();
   }
 
   /* ---------------- UI Helpers ---------------- */
 
+  const isMobileViewport = () => window.matchMedia('(max-width: 900px)').matches;
+
+  function setSidebarOpen(open) {
+    const shell = $('#app-shell');
+    const btn = $('#btn-sidebar-toggle');
+    const backdrop = $('#sidebar-backdrop');
+    const isOpen = Boolean(open);
+    if (shell) shell.classList.toggle('sidebar-open', isOpen);
+    if (btn && isMobileViewport()) btn.setAttribute('aria-expanded', String(isOpen));
+    if (backdrop) backdrop.hidden = !isOpen;
+  }
+
+  function toggleSidebar() {
+    const shell = $('#app-shell');
+    const btn = $('#btn-sidebar-toggle');
+    if (!shell) return;
+    if (isMobileViewport()) {
+      setSidebarOpen(!shell.classList.contains('sidebar-open'));
+      return;
+    }
+    const collapsed = shell.classList.toggle('sidebar-collapsed');
+    shell.classList.remove('sidebar-open');
+    if ($('#sidebar-backdrop')) $('#sidebar-backdrop').hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', String(!collapsed));
+  }
+
+  function updateViewHeading() {
+    const ws = state.activeWorkspace;
+    const w = wsState(ws);
+    const isRepQueue = state.view === 'queue' && !(ws === 'asoc' && w.activeMode === 'repeating');
+    const navRep = $('#nav-reporting');
+    if (navRep) {
+      navRep.classList.toggle('active', isRepQueue);
+      navRep.setAttribute('aria-pressed', String(isRepQueue));
+    }
+    const heading = $('#view-heading');
+    if (!heading) return;
+    if (state.view === 'history') heading.textContent = 'Riwayat';
+    else if (state.view === 'approvals') heading.textContent = 'Approval';
+    else if (state.view === 'settings') heading.textContent = 'Pengaturan';
+    else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Repeating' : 'Reporting';
+  }
+
   function switchView(view) {
-    state.view = view === 'history' ? 'history' : (view === 'approvals' ? 'approvals' : 'queue');
+    state.view = (view === 'history' || view === 'approvals' || view === 'settings') ? view : 'queue';
     const isQueue = state.view === 'queue';
     const isHist = state.view === 'history';
     const isAppr = state.view === 'approvals';
+    const isSettings = state.view === 'settings';
 
     $('#view-queue').hidden = !isQueue;
     $('#view-history').hidden = !isHist;
     $('#view-approvals').hidden = !isAppr;
+    $('#view-settings').hidden = !isSettings;
 
     $('#tab-queue').classList.toggle('active', isQueue);
     $('#tab-queue').setAttribute('aria-selected', String(isQueue));
@@ -3491,6 +3552,12 @@
     $('#tab-history').setAttribute('aria-selected', String(isHist));
     $('#tab-approvals').classList.toggle('active', isAppr);
     $('#tab-approvals').setAttribute('aria-selected', String(isAppr));
+    $('#tab-settings').classList.toggle('active', isSettings);
+    $('#tab-settings').setAttribute('aria-selected', String(isSettings));
+
+    if (isMobileViewport()) setSidebarOpen(false);
+    updateViewHeading();
+    renderRejectionBanner();
 
     if (isHist) {
       state.historyWorkspace = state.activeWorkspace;
@@ -3503,6 +3570,10 @@
       if (nameEl && nameEl.value !== state.analystName) nameEl.value = state.analystName;
       syncApprovalFilterControls();
       fetchApprovals(false);
+    } else if (isSettings) {
+      fillSettingsForm(state.activeWorkspace);
+      const epEl = $('#appr-endpoint-url');
+      if (epEl) epEl.textContent = 'POST ' + approvalEndpointUrl();
     }
   }
 
@@ -3524,6 +3595,8 @@
       const b = $(`#stats .stat[data-stat="${k}"] b`);
       if (b) b.textContent = String(v);
     }
+    const errCard = $('#stats .stat[data-stat="error"]');
+    if (errCard) errCard.hidden = counts.error === 0;
     $('#tab-queue-count').textContent = String(w.cards.length);
     $('#empty-state').hidden = w.cards.length > 0;
     updateWorkspaceBadges();
@@ -3580,26 +3653,39 @@
     $('#tab-queue').addEventListener('click', () => switchView('queue'));
     $('#tab-history').addEventListener('click', () => switchView('history'));
     $('#tab-approvals').addEventListener('click', () => switchView('approvals'));
+    $('#tab-settings').addEventListener('click', () => switchView('settings'));
+    $('#nav-users')?.addEventListener('click', () => {
+      if (isMobileViewport()) setSidebarOpen(false);
+      openUserModal('users');
+    });
+    $('#nav-reporting')?.addEventListener('click', () => {
+      setActiveMode('reporting');
+      switchView('queue');
+    });
+    $('#btn-sidebar-toggle')?.addEventListener('click', toggleSidebar);
+    $('#sidebar-backdrop')?.addEventListener('click', () => setSidebarOpen(false));
+    window.addEventListener('resize', () => {
+      const shell = $('#app-shell');
+      const btn = $('#btn-sidebar-toggle');
+      if (!isMobileViewport()) {
+        shell?.classList.remove('sidebar-open');
+        if ($('#sidebar-backdrop')) $('#sidebar-backdrop').hidden = true;
+        if (btn) btn.setAttribute('aria-expanded', String(!shell?.classList.contains('sidebar-collapsed')));
+      } else if (btn) {
+        btn.setAttribute('aria-expanded', String(Boolean(shell?.classList.contains('sidebar-open'))));
+      }
+    });
 
     $('#btn-refresh-shared').addEventListener('click', () => fetchSharedState(false));
 
-    $('#btn-settings').addEventListener('click', () => {
-      const panel = $('#settings-panel');
-      const open = panel.hidden;
-      if (open) fillSettingsForm(state.activeWorkspace);
-      panel.hidden = !open;
-      $('#btn-settings').setAttribute('aria-expanded', String(open));
-    });
+    $('#btn-settings')?.addEventListener('click', () => switchView('settings'));
     $('#set-ws-asoc').addEventListener('click', () => fillSettingsForm('asoc'));
     $('#set-ws-soc').addEventListener('click', () => fillSettingsForm('soc'));
 
     $('#btn-base-from-page').addEventListener('click', () => { $('#set-base-url').value = guessBaseUrl(); });
     $('#btn-add-tenant').addEventListener('click', () => addTenantSettingsRow('', ''));
     $('#btn-save-settings').addEventListener('click', saveSettings);
-    $('#btn-close-settings').addEventListener('click', () => {
-      $('#settings-panel').hidden = true;
-      $('#btn-settings').setAttribute('aria-expanded', 'false');
-    });
+    $('#btn-close-settings').addEventListener('click', () => switchView('queue'));
     $('#btn-reset-settings').addEventListener('click', () => {
       const ws = state.settingsWorkspace;
       wsState(ws).settings = buildDefaultSettings(ws);
@@ -3757,6 +3843,10 @@
       state.approvalStatusFilter = 'denied';
       switchView('approvals');
     });
+    $('#btn-rejection-dismiss').addEventListener('click', () => {
+      state.rejectionDismissedSig = state.lastRejectionBannerSig;
+      $('#rejection-banner').hidden = true;
+    });
 
     $('#login-form')?.addEventListener('submit', handleLoginSubmit);
     $('#btn-toggle-login-pw')?.addEventListener('click', () => {
@@ -3787,14 +3877,16 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && $('#user-modal') && !$('#user-modal').hidden) {
+      if (e.key === 'Escape' && $('#app-shell')?.classList.contains('sidebar-open')) {
+        e.preventDefault();
+        setSidebarOpen(false);
+      } else if (e.key === 'Escape' && $('#user-modal') && !$('#user-modal').hidden) {
         e.preventDefault();
         closeUserModal();
-      } else if (e.key === 'Escape' && !$('#settings-panel').hidden) {
+      } else if (e.key === 'Escape' && state.view === 'settings') {
         e.preventDefault();
-        $('#settings-panel').hidden = true;
-        $('#btn-settings').setAttribute('aria-expanded', 'false');
-        $('#btn-settings').focus();
+        switchView('queue');
+        $('#tab-settings')?.focus();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.view === 'queue') {
         e.preventDefault();
         const cardEl = document.activeElement?.closest?.('.card[data-id]');

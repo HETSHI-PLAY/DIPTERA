@@ -22,3 +22,10 @@ Alpha Reporter*.json
 *.workflow.json
 finding.md
 update.md
+.agents
+.agent
+skills-lock.json
+skill-lock.json
+.taste-skill
+.hallmark
+shots

@@ -11,7 +11,7 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY index.html styles.css tenants.css app.js extract.js numbering.js config.js db.js auth.js server.js ./
+COPY index.html styles.css tenants.css favicon.svg app.js extract.js numbering.js config.js db.js auth.js server.js ./
 
 RUN mkdir -p /app/data && chown -R node:node /app
 

@@ -5,9 +5,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <title>Diptera — ASOC (Alpha Reporter)</title>
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="tenants.css" />
+  <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
+  <title>Diptera: ASOC (Alpha Reporter)</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261124c" />
+  <link rel="stylesheet" href="styles.css?v=20261124c" />
+  <link rel="stylesheet" href="tenants.css?v=20261124b" />
 </head>
 
 <body>
@@ -48,11 +50,16 @@
     </div>
   </section>
 
-  <!-- Tier 1: Global Topbar (Brand + Workspace Switcher + External Actions) -->
+  <!-- Global Topbar (Brand + Workspace Switcher + User Controls) -->
   <header class="topbar">
-    <div class="ws-rail" aria-hidden="true"></div>
     <div class="topbar-inner">
       <div class="topbar-left">
+        <button id="btn-sidebar-toggle" class="btn ghost btn-sm icon-btn mobile-menu-btn" type="button" aria-label="Buka atau tutup navigasi" aria-expanded="true" aria-controls="app-sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
@@ -62,31 +69,23 @@
           </div>
           <div class="brand-text">
             <h1>Diptera</h1>
-            <span class="brand-tag" id="brand-subtitle">Alpha Reporter</span>
+            <span class="brand-subtitle" id="brand-subtitle">Alpha Reporter</span>
           </div>
-        </div>
-
-        <div class="ws-switcher" role="group" aria-label="Pilih Workspace">
-          <button class="ws-btn active" id="ws-asoc" type="button" data-ws="asoc" aria-pressed="true" title="ASOC — Alpha Reporter v2 (Alt+1)">
-            <span class="ws-dot" aria-hidden="true"></span>
-            <span class="ws-label">ASOC</span>
-            <span class="ws-badge" id="ws-asoc-running" hidden>0</span>
-          </button>
-          <button class="ws-btn" id="ws-soc" type="button" data-ws="soc" aria-pressed="false" title="SOC — Charlie Reporter (Alt+2)">
-            <span class="ws-dot" aria-hidden="true"></span>
-            <span class="ws-label">SOC</span>
-            <span class="ws-badge" id="ws-soc-running" hidden>0</span>
-          </button>
         </div>
       </div>
 
       <div class="topbar-right">
-        <a class="btn ghost btn-sm" id="link-form" href="#" target="_blank" rel="noopener">
-          <span>Form n8n</span>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M7 17L17 7M9 7h8v8" />
-          </svg>
-        </a>
+        <div class="ws-switcher" role="group" aria-label="Pilih Workspace">
+          <button class="ws-btn active" id="ws-asoc" type="button" data-ws="asoc" aria-pressed="true" title="ASOC — Alpha Reporter v2 (Alt+1)">
+            <span class="ws-label">ASOC</span>
+            <span class="ws-badge" id="ws-asoc-running" hidden>0</span>
+          </button>
+          <button class="ws-btn" id="ws-soc" type="button" data-ws="soc" aria-pressed="false" title="SOC — Charlie Reporter (Alt+2)">
+            <span class="ws-label">SOC</span>
+            <span class="ws-badge" id="ws-soc-running" hidden>0</span>
+          </button>
+        </div>
+
         <div class="user-bar" id="user-bar" hidden>
           <button class="user-pill" id="btn-user-modal" type="button" title="Pengaturan Akun &amp; Manajemen User">
             <span class="user-avatar" id="user-avatar" aria-hidden="true"></span>
@@ -95,429 +94,465 @@
           </button>
           <button class="btn ghost btn-sm" id="btn-logout" type="button" title="Keluar dari sesi">Keluar</button>
         </div>
-        <button class="btn ghost btn-sm icon-btn" id="btn-settings" type="button" title="Pengaturan Workspace" aria-expanded="false" aria-controls="settings-panel">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z" />
-          </svg>
-          <span class="sr-only">Pengaturan</span>
-        </button>
       </div>
     </div>
   </header>
 
-  <main>
-    <!-- Tier 2: Workspace Sub-bar (Contextual Tabs + Status Summary) -->
-    <div class="subbar">
-      <nav class="nav-tabs" role="tablist" aria-label="Tampilan workspace">
-        <button class="nav-tab active" id="tab-queue" type="button" role="tab" aria-selected="true" aria-controls="view-queue">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="4" y="4" width="16" height="6" rx="1.5" />
-            <rect x="4" y="14" width="16" height="6" rx="1.5" />
-          </svg>
-          <span>Antrian Form</span>
-          <span class="tab-count" id="tab-queue-count">1</span>
-        </button>
-        <button class="nav-tab" id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="view-history">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7v5l3 2" />
-          </svg>
-          <span id="tab-history-label">Riwayat ASOC</span>
-          <span class="tab-count" id="tab-history-count">0</span>
-        </button>
-        <button class="nav-tab" id="tab-approvals" type="button" role="tab" aria-selected="false" aria-controls="view-approvals">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3l7 4v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V7l7-4z" />
-            <path d="M9 12l2 2 4-4" />
-          </svg>
-          <span>Approval</span>
-          <span class="tab-count" id="tab-approvals-count">0</span>
-        </button>
-      </nav>
+  <!-- App Shell: Left Sidebar + Main Canvas -->
+  <div id="app-shell" class="app-shell">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
 
-      <div class="stats" id="stats" aria-label="Ringkasan status antrian">
-        <span class="stat" data-stat="done"><b>0</b> selesai</span>
-        <span class="stat" data-stat="running"><b>0</b> proses</span>
-        <span class="stat" data-stat="pending"><b>0</b> antre</span>
-        <span class="stat" data-stat="error"><b>0</b> gagal</span>
-      </div>
-    </div>
-
-    <!-- Live Shared Reference Bar (Acuan Nomor Bersama Lintas Analis per Workspace) -->
-    <section class="shared-bar" id="shared-bar" aria-label="Acuan nomor terakhir bersama">
-      <div class="shared-group">
-        <span class="shared-ws-pill" id="shared-ws-badge">ASOC</span>
-        <span class="shared-label" id="shared-case-label">Last IRIS Case</span>
-        <strong class="shared-case-pill" id="shared-last-case">—</strong>
-      </div>
-      <div class="shared-divider" aria-hidden="true"></div>
-      <div class="shared-group shared-tickets-wrap">
-        <span class="shared-label">Last Tiket Tenant</span>
-        <div class="shared-tickets" id="shared-tickets"></div>
-      </div>
-      <div class="shared-meta">
-        <span class="sync-pill" id="shared-sync-status">Memuat…</span>
-        <button class="btn ghost btn-xs icon-btn" id="btn-refresh-shared" type="button" title="Segarkan acuan dari server">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <path d="M21 3v6h-6" />
-          </svg>
-          <span class="sr-only">Segarkan</span>
-        </button>
-      </div>
-    </section>
-
-    <!-- Live Rejection Alert Banner (Pengganti Telegram - Inform Rejection, tampil lintas tab) -->
-    <section class="rejection-banner" id="rejection-banner" hidden aria-live="polite" aria-label="Notifikasi case ditolak">
-      <div class="rejection-banner-head">
-        <div class="rejection-banner-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M15 9l-6 6M9 9l6 6" />
-          </svg>
-          <strong id="rejection-banner-heading">Case Ditolak — Perlu Tindak Lanjut</strong>
-          <span class="chip appr-denied" id="rejection-banner-count">0</span>
-        </div>
-        <div class="rejection-banner-head-actions">
-          <button class="btn ghost btn-xs" id="btn-rejection-open-tab" type="button">Lihat di Approval</button>
-        </div>
-      </div>
-      <div class="rejection-banner-list" id="rejection-banner-list"></div>
-    </section>
-
-    <!-- Settings Panel (Collapsible, Per-Workspace) -->
-    <section class="settings" id="settings-panel" hidden>
-      <div class="settings-head">
-        <div>
-          <h2 class="settings-title" id="settings-title">Pengaturan Workspace ASOC</h2>
-          <p class="field-hint" id="settings-subtitle">Konfigurasi &amp; acuan nomor server tersimpan terpisah antara ASOC dan SOC.</p>
-        </div>
-        <div class="settings-head-actions">
-          <button class="btn ghost btn-xs" id="btn-open-user-modal-from-settings" type="button" hidden>Kelola Akun &amp; User</button>
-          <div class="settings-ws-tabs" role="group" aria-label="Pilih pengaturan workspace">
-            <button class="ws-tab-btn active" id="set-ws-asoc" type="button" data-set-ws="asoc" data-ws="asoc" aria-pressed="true">Pengaturan ASOC</button>
-            <button class="ws-tab-btn" id="set-ws-soc" type="button" data-set-ws="soc" data-ws="soc" aria-pressed="false">Pengaturan SOC</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-grid">
-        <div class="field">
-          <label class="field-label" for="set-base-url">n8n Base URL</label>
-          <input type="text" id="set-base-url" placeholder="http://10.20.100.65:5678" spellcheck="false" />
-          <div class="settings-inline">
-            <button class="btn ghost btn-xs" id="btn-base-from-page" type="button">Pakai IP halaman ini</button>
-            <span class="field-hint" id="base-url-page-hint"></span>
-          </div>
-        </div>
-
-        <label class="field">
-          <span class="field-label" id="set-form-path-label">Form path Alpha Reporter</span>
-          <input type="text" id="set-form-path" placeholder="alpha-form" spellcheck="false" />
-        </label>
-
-        <label class="field" id="set-iris-url-wrap">
-          <span class="field-label">IRIS Base URL</span>
-          <input type="text" id="set-iris-url" placeholder="https://10.20.100.66" spellcheck="false" />
-        </label>
-
-        <label class="field" id="set-case-id-mode-wrap">
-          <span class="field-label">Mode Nomor Case IRIS</span>
-          <select id="set-case-id-mode">
-            <option value="auto_iris">Otomatis dari IRIS (Direkomendasikan)</option>
-            <option value="manual">Manual (isi di form)</option>
-          </select>
-          <span class="field-hint">Otomatis: workflow membuat case di IRIS lalu nomor Case ID dipakai ke GDoc, Sheets, &amp; riwayat bersama.</span>
-        </label>
-
-        <label class="field">
-          <span class="field-label">Mode pengiriman batch</span>
-          <select id="set-submit-mode">
-            <option value="sequential">Berurutan (1 per 1 — aman untuk AI lokal)</option>
-            <option value="parallel">Paralel (semua sekaligus)</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span class="field-label">Batas tunggu hasil (menit)</span>
-          <input type="number" id="set-timeout" min="1" max="240" step="1" />
-        </label>
-
-        <div class="field">
-          <span class="field-label">Perilaku antrian</span>
-          <div class="checks">
-            <label class="check"><input type="checkbox" id="set-auto-number" /> <span>Isi nomor tiket &amp; antrean otomatis per tenant</span></label>
-            <label class="check"><input type="checkbox" id="set-auto-collapse" /> <span>Tutup kartu otomatis saat dikirim</span></label>
-            <label class="check"><input type="checkbox" id="set-auto-resume" /> <span>Tandai selesai di n8n setelah Form Ending diambil <small class="check-hint">(mencegah eksekusi menggantung di status Waiting)</small></span></label>
-            <label class="check"><input type="checkbox" id="set-rewrite-host" /> <span>Sesuaikan host URL hasil dengan Base URL <small class="check-hint">(mengganti localhost/IP internal n8n dengan Base URL di atas)</small></span></label>
-            <label class="check"><input type="checkbox" id="set-desktop-notify" /> <span>Notifikasi desktop saat laporan siap</span></label>
-          </div>
-        </div>
-
-        <div class="field">
-          <span class="field-label" id="set-shared-label">Acuan Bersama Server (Tenant, Tiket Terakhir, &amp; Case ID Terakhir)</span>
-          <span class="field-hint">Tersimpan di server Diptera dan langsung dipakai seluruh tim pada workspace ini.</span>
-
-          <div class="tenant-table">
-            <div class="tenant-row tenant-head" aria-hidden="true">
-              <span class="tenant-col-name">Tenant</span>
-              <span class="tenant-col-num">Nomor Tiket Terakhir</span>
-              <span class="tenant-col-act"></span>
-            </div>
-            <div id="tenants-list" class="tenants-list"></div>
-          </div>
-
-          <div class="settings-inline">
-            <button class="btn ghost btn-xs" id="btn-add-tenant" type="button">+ Tambah Tenant</button>
-          </div>
-
-          <label class="case-id-line">
-            <span class="field-label" id="set-last-case-label">IRIS Case ID Terakhir (Acuan Server)</span>
-            <input type="text" id="set-last-case-id" placeholder="Mis. #412" spellcheck="false" />
-          </label>
-        </div>
-
-        <details class="advanced-details field-full">
-          <summary class="advanced-summary">
-            <span>Pengaturan Lanjutan — Definisi field form dasar</span>
-            <span class="field-tag">JSON</span>
-          </summary>
-          <div class="field" style="margin-top: 10px;">
-            <label class="sr-only" for="set-fields-json">Definisi field form dasar (JSON)</label>
-            <textarea id="set-fields-json" rows="8" spellcheck="false"></textarea>
-          </div>
-        </details>
-      </div>
-
-      <div class="settings-actions">
-        <button class="btn primary" id="btn-save-settings" type="button">Simpan &amp; Sinkronkan Server</button>
-        <button class="btn ghost" id="btn-close-settings" type="button">Tutup</button>
-        <button class="btn ghost" id="btn-reset-settings" type="button">Reset default workspace ini</button>
-        <span class="spacer"></span>
-        <button class="btn ghost danger" id="btn-clear-all" type="button">Hapus semua kartu ASOC</button>
-      </div>
-    </section>
-
-    <!-- VIEW 1: Antrian Form -->
-    <div id="view-queue" role="tabpanel" aria-labelledby="tab-queue">
-      <div class="toolbar">
-        <div class="mode-switch" id="asoc-mode-switch" role="group" aria-label="Mode operasi pengiriman ASOC">
-          <button class="mode-btn active" id="mode-reporting" type="button" data-mode="reporting" aria-pressed="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <path d="M14 2v6h6M8 13h8M8 17h5" />
-            </svg>
+    <aside id="app-sidebar" class="sidebar" aria-label="Navigasi utama">
+      <div class="sidebar-section">
+        <div class="sidebar-heading sidebar-heading-accent">OPERATIONS</div>
+        <nav class="sidebar-nav" role="tablist" aria-label="Tampilan workspace">
+          <button class="sidebar-item active" id="tab-queue" type="button" role="tab" aria-selected="true" aria-controls="view-queue">
+            <span>Antrian</span>
+            <span class="tab-count" id="tab-queue-count">1</span>
+          </button>
+          <button class="sidebar-item" id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="view-history">
+            <span id="tab-history-label">Riwayat</span>
+            <span class="tab-count" id="tab-history-count">0</span>
+          </button>
+          <button class="sidebar-item" id="tab-approvals" type="button" role="tab" aria-selected="false" aria-controls="view-approvals">
+            <span>Approval</span>
+            <span class="tab-count" id="tab-approvals-count">0</span>
+          </button>
+          <button class="sidebar-item active" id="nav-reporting" type="button" aria-pressed="true">
             <span>Reporting</span>
           </button>
-          <button class="mode-btn" id="mode-repeating" type="button" data-mode="repeating" aria-pressed="false">
+        </nav>
+      </div>
+
+      <hr class="sidebar-divider" />
+
+      <div class="sidebar-section">
+        <div class="sidebar-heading">SYSTEM</div>
+        <div class="sidebar-nav">
+          <button class="sidebar-item" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="view-settings">
+            <span>Pengaturan</span>
+          </button>
+          <button class="sidebar-item" id="nav-users" type="button" hidden>
+            <span>Manajemen User</span>
+          </button>
+          <a class="sidebar-item sidebar-link" id="link-form" href="#" target="_blank" rel="noopener">
+            <span>Form n8n</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M17 2l4 4-4 4" />
-              <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-              <path d="M7 22l-4-4 4-4" />
-              <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+              <path d="M7 17L17 7M9 7h8v8" />
             </svg>
-            <span>Repeating</span>
-          </button>
+          </a>
         </div>
-
-        <button class="btn accent" id="btn-submit-all" type="button" title="Kirim semua form siap (Ctrl+Enter di luar kartu)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4.5 12.5 10 18 19.5 6.5" />
-          </svg>
-          <span id="btn-submit-all-label">Kirim Semua</span>
-        </button>
-
-        <button class="btn ghost" id="btn-add" type="button">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-          <span>Tambah Form</span>
-        </button>
-
-        <button class="btn danger" id="btn-cancel" type="button" hidden>Batalkan</button>
-        <button class="btn ghost" id="btn-toggle-all" type="button">Tutup semua</button>
-        <button class="btn ghost" id="btn-clear-done" type="button" hidden>Hapus selesai</button>
-        <span class="spacer"></span>
       </div>
+    </aside>
 
-      <!-- Progressive Disclosure: Opsi Mode Repeating (ASOC Only) -->
-      <section class="repeat-panel" id="repeat-panel" hidden aria-label="Pengaturan Mode Repeating">
-        <div class="repeat-panel-head">
-          <div class="repeat-title-group">
-            <h2>Mode Repeating — Buat Ulang Laporan</h2>
-            <p>Counter tiket &amp; Case ID server tidak dinaikkan otomatis kecuali membuat Case IRIS baru.</p>
+    <main class="main-canvas">
+      <div class="canvas-inner">
+        <header class="view-header">
+          <h2 id="view-heading" class="view-title">Reporting</h2>
+        </header>
+
+        <!-- Live Rejection Alert Banner (Pengganti Telegram - Inform Rejection, tampil lintas tab) -->
+        <section class="rejection-banner" id="rejection-banner" hidden aria-live="polite" aria-label="Notifikasi case ditolak">
+          <div class="rejection-banner-head">
+            <div class="rejection-banner-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M15 9l-6 6M9 9l6 6" />
+              </svg>
+              <strong id="rejection-banner-heading">Case Ditolak</strong>
+              <span class="chip appr-denied" id="rejection-banner-count">0</span>
+            </div>
+            <div class="rejection-banner-head-actions">
+              <button class="btn ghost btn-xs" id="btn-rejection-open-tab" type="button">Lihat semua</button>
+              <button class="btn ghost btn-xs icon-btn" id="btn-rejection-dismiss" type="button" title="Tutup notifikasi" aria-label="Tutup notifikasi">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <div class="repeat-presets" role="group" aria-label="Preset cepat mode repeating">
-            <button class="preset-btn" type="button" data-preset="md_only">Markdown Saja</button>
-            <button class="preset-btn" type="button" data-preset="gdoc_sheet">Ulang GDoc &amp; Sheets</button>
-            <button class="preset-btn" type="button" data-preset="update_iris">Update IRIS Existing</button>
+          <div class="rejection-banner-list" id="rejection-banner-list"></div>
+        </section>
+
+        <!-- VIEW 4: Pengaturan Workspace & Integrasi -->
+        <section id="view-settings" class="settings-view" role="tabpanel" aria-labelledby="tab-settings" hidden>
+          <div class="settings" id="settings-panel">
+            <div class="settings-head">
+              <div>
+                <h2 class="settings-title" id="settings-title">Pengaturan Workspace ASOC</h2>
+                <p class="field-hint" id="settings-subtitle">Konfigurasi tersimpan terpisah untuk ASOC dan SOC.</p>
+              </div>
+              <div class="settings-head-actions">
+                <button class="btn ghost btn-xs" id="btn-open-user-modal-from-settings" type="button" hidden>Kelola Akun &amp; User</button>
+                <div class="settings-ws-tabs" role="group" aria-label="Pilih pengaturan workspace">
+                  <button class="ws-tab-btn active" id="set-ws-asoc" type="button" data-set-ws="asoc" data-ws="asoc" aria-pressed="true">Pengaturan ASOC</button>
+                  <button class="ws-tab-btn" id="set-ws-soc" type="button" data-set-ws="soc" data-ws="soc" aria-pressed="false">Pengaturan SOC</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <div class="field">
+                <label class="field-label" for="set-base-url">n8n Base URL</label>
+                <input type="text" id="set-base-url" placeholder="http://10.20.100.65:5678" spellcheck="false" />
+                <div class="settings-inline">
+                  <button class="btn ghost btn-xs" id="btn-base-from-page" type="button">Pakai IP halaman ini</button>
+                  <span class="field-hint" id="base-url-page-hint"></span>
+                </div>
+              </div>
+
+              <label class="field">
+                <span class="field-label" id="set-form-path-label">Form path Alpha Reporter</span>
+                <input type="text" id="set-form-path" placeholder="alpha-form" spellcheck="false" />
+              </label>
+
+              <label class="field" id="set-iris-url-wrap">
+                <span class="field-label">IRIS Base URL</span>
+                <input type="text" id="set-iris-url" placeholder="https://10.20.100.66" spellcheck="false" />
+              </label>
+
+              <label class="field" id="set-case-id-mode-wrap">
+                <span class="field-label">Mode Nomor Case IRIS</span>
+                <select id="set-case-id-mode">
+                  <option value="auto_iris">Otomatis dari IRIS (Direkomendasikan)</option>
+                  <option value="manual">Manual (isi di form)</option>
+                </select>
+                <span class="field-hint">Otomatis: Case ID dibuat di IRIS lalu dipakai ke GDoc, Sheets, dan riwayat.</span>
+              </label>
+
+              <label class="field">
+                <span class="field-label">Mode pengiriman batch</span>
+                <select id="set-submit-mode">
+                  <option value="sequential">Berurutan (1 per 1 — aman untuk AI lokal)</option>
+                  <option value="parallel">Paralel (semua sekaligus)</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span class="field-label">Batas tunggu hasil (menit)</span>
+                <input type="number" id="set-timeout" min="1" max="240" step="1" />
+              </label>
+
+              <div class="field">
+                <span class="field-label">Perilaku antrian</span>
+                <div class="checks">
+                  <label class="check"><input type="checkbox" id="set-auto-number" /> <span>Isi nomor tiket &amp; antrean otomatis per tenant</span></label>
+                  <label class="check"><input type="checkbox" id="set-auto-collapse" /> <span>Tutup kartu otomatis saat dikirim</span></label>
+                  <label class="check"><input type="checkbox" id="set-auto-resume" /> <span>Tandai selesai di n8n setelah Form Ending diambil <small class="check-hint">(hentikan eksekusi Waiting)</small></span></label>
+                  <label class="check"><input type="checkbox" id="set-rewrite-host" /> <span>Sesuaikan host URL hasil dengan Base URL <small class="check-hint">(ganti localhost/IP internal)</small></span></label>
+                  <label class="check"><input type="checkbox" id="set-desktop-notify" /> <span>Notifikasi desktop saat laporan siap</span></label>
+                </div>
+              </div>
+
+              <div class="field">
+                <span class="field-label" id="set-shared-label">Acuan Nomor Bersama</span>
+                <span class="field-hint">Dipakai seluruh tim pada workspace ini.</span>
+
+                <div class="tenant-table">
+                  <div class="tenant-row tenant-head" aria-hidden="true">
+                    <span class="tenant-col-name">Tenant</span>
+                    <span class="tenant-col-num">Nomor Tiket Terakhir</span>
+                    <span class="tenant-col-act"></span>
+                  </div>
+                  <div id="tenants-list" class="tenants-list"></div>
+                </div>
+
+                <div class="settings-inline">
+                  <button class="btn ghost btn-xs" id="btn-add-tenant" type="button">+ Tambah Tenant</button>
+                </div>
+
+                <label class="case-id-line">
+                  <span class="field-label" id="set-last-case-label">IRIS Case ID Terakhir (Acuan Server)</span>
+                  <input type="text" id="set-last-case-id" placeholder="Mis. #412" spellcheck="false" />
+                </label>
+              </div>
+
+              <details class="advanced-details field-full">
+                <summary class="advanced-summary">
+                  <span>Field form dasar</span>
+                  <span class="field-tag">JSON</span>
+                </summary>
+                <div class="field advanced-field-body">
+                  <label class="sr-only" for="set-fields-json">Definisi field form dasar (JSON)</label>
+                  <textarea id="set-fields-json" rows="8" spellcheck="false"></textarea>
+                </div>
+              </details>
+            </div>
+
+            <section class="integration-block" aria-labelledby="integration-title">
+              <h3 class="integration-title" id="integration-title">Integrasi n8n</h3>
+              <div class="approval-endpoint-row">
+                <code class="approval-endpoint-code" id="appr-endpoint-url">POST /api/approvals</code>
+                <button class="btn ghost btn-xs" id="btn-copy-appr-url" type="button">Salin Endpoint</button>
+              </div>
+              <details class="approval-guide">
+                <summary>Panduan approval webhook</summary>
+                <div class="approval-guide-body">
+                  <ol>
+                    <li><strong>HTTP Request (POST):</strong> kirim metadata case + <code>{{ $execution.resumeUrl }}</code> ke <code>/api/approvals</code>.</li>
+                    <li><strong>Node Wait (On Webhook Call):</strong> tunggu webhook resume dari Diptera.</li>
+                    <li><strong>Approve / Deny di Diptera:</strong> server memanggil <code>resumeUrl</code> dengan <code>decision</code>, <code>approved</code>, <code>reason</code>, dan <code>decidedBy</code>.</li>
+                    <li><strong>Node IF / Switch:</strong> cek <code>{{ $json.body.decision === 'approve' }}</code> untuk melanjutkan aksi.</li>
+                  </ol>
+                  <p>Notifikasi penolakan dari <code>POST /api/rejections</code> muncul sebagai banner dan di filter <strong>Ditolak</strong>.</p>
+                </div>
+              </details>
+            </section>
+
+            <div class="settings-actions">
+              <button class="btn primary" id="btn-save-settings" type="button">Simpan &amp; Sinkronkan Server</button>
+              <button class="btn ghost" id="btn-close-settings" type="button">Tutup</button>
+              <button class="btn ghost" id="btn-reset-settings" type="button">Reset default workspace ini</button>
+              <span class="spacer"></span>
+              <button class="btn ghost danger" id="btn-clear-all" type="button">Hapus semua kartu ASOC</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 1: Antrian Form -->
+        <div id="view-queue" role="tabpanel" aria-labelledby="tab-queue">
+          <div class="kpi-grid" id="stats" aria-label="Ringkasan status antrian">
+            <div class="stat kpi-card" data-stat="done">
+              <b class="kpi-value">0</b>
+              <span class="kpi-label">Selesai</span>
+            </div>
+            <div class="stat kpi-card" data-stat="running">
+              <b class="kpi-value">0</b>
+              <span class="kpi-label">Proses</span>
+            </div>
+            <div class="stat kpi-card" data-stat="pending">
+              <b class="kpi-value">0</b>
+              <span class="kpi-label">Antre</span>
+            </div>
+            <div class="stat kpi-card kpi-card-error" data-stat="error" hidden>
+              <b class="kpi-value">0</b>
+              <span class="kpi-label">Gagal</span>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <div class="mode-switch" id="asoc-mode-switch" role="group" aria-label="Mode operasi pengiriman ASOC">
+              <button class="mode-btn active" id="mode-reporting" type="button" data-mode="reporting" aria-pressed="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6M8 13h8M8 17h5" />
+                </svg>
+                <span>Reporting</span>
+              </button>
+              <button class="mode-btn" id="mode-repeating" type="button" data-mode="repeating" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17 2l4 4-4 4" />
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                  <path d="M7 22l-4-4 4-4" />
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                </svg>
+                <span>Repeating</span>
+              </button>
+            </div>
+
+            <button class="btn accent" id="btn-submit-all" type="button" title="Kirim semua form siap (Ctrl+Enter di luar kartu)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4.5 12.5 10 18 19.5 6.5" />
+              </svg>
+              <span id="btn-submit-all-label">Kirim Semua</span>
+            </button>
+
+            <button class="btn ghost" id="btn-add" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>Tambah Form</span>
+            </button>
+
+            <button class="btn danger" id="btn-cancel" type="button" hidden>Batalkan</button>
+            <button class="btn ghost" id="btn-toggle-all" type="button">Tutup semua</button>
+            <button class="btn ghost" id="btn-clear-done" type="button" hidden>Hapus selesai</button>
+            <span class="spacer"></span>
+          </div>
+
+          <!-- Live Shared Reference Bar (Acuan Nomor Bersama Lintas Analis per Workspace) -->
+          <section class="shared-bar" id="shared-bar" aria-label="Acuan nomor terakhir bersama">
+            <div class="shared-group">
+              <span class="shared-ws-pill" id="shared-ws-badge">ASOC</span>
+              <span class="shared-label" id="shared-case-label">Last IRIS Case</span>
+              <strong class="shared-case-pill" id="shared-last-case">—</strong>
+            </div>
+            <div class="shared-divider" aria-hidden="true"></div>
+            <div class="shared-group shared-tickets-wrap">
+              <span class="shared-label">Last Tiket Tenant</span>
+              <div class="shared-tickets" id="shared-tickets"></div>
+            </div>
+            <div class="shared-meta">
+              <span class="sync-pill" id="shared-sync-status">Memuat…</span>
+              <button class="btn ghost btn-xs icon-btn" id="btn-refresh-shared" type="button" title="Segarkan acuan dari server">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <path d="M21 3v6h-6" />
+                </svg>
+                <span class="sr-only">Segarkan</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Progressive Disclosure: Opsi Mode Repeating (ASOC Only) -->
+          <section class="repeat-panel" id="repeat-panel" hidden aria-label="Pengaturan Mode Repeating">
+            <div class="repeat-panel-head">
+              <div class="repeat-title-group">
+                <h2>Mode Repeating: Buat Ulang Laporan</h2>
+                <p>Counter tiket &amp; Case ID server tidak dinaikkan otomatis kecuali membuat Case IRIS baru.</p>
+              </div>
+              <div class="repeat-presets" role="group" aria-label="Preset cepat mode repeating">
+                <button class="preset-btn" type="button" data-preset="md_only">Markdown Saja</button>
+                <button class="preset-btn" type="button" data-preset="gdoc_sheet">Ulang GDoc &amp; Sheets</button>
+                <button class="preset-btn" type="button" data-preset="update_iris">Update IRIS Existing</button>
+              </div>
+            </div>
+
+            <div class="repeat-checks">
+              <label class="repeat-check"><input type="checkbox" id="rep-create-iris" /> <span>Buat Case IRIS baru</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-update-iris" /> <span>Update Summary ke IRIS</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-approval" /> <span>Approval Diptera &amp; Close</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-email" /> <span>Kirim Email &amp; PDF</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-gdoc" /> <span>Upload Google Docs</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-sheet" /> <span>Catat Google Sheets</span></label>
+              <label class="repeat-check"><input type="checkbox" id="rep-md" checked /> <span>Tampilkan Markdown</span></label>
+            </div>
+            <div class="repeat-hint" id="repeat-dependency-hint"></div>
+          </section>
+
+          <section id="cards" class="cards" aria-live="polite"></section>
+
+          <div id="empty-state" class="empty" hidden>
+            <h2>Belum ada form di antrian</h2>
+            <p id="empty-state-desc">Tambahkan form baru, atau ulangi laporan dari Riwayat.</p>
+            <button class="btn primary" id="btn-add-empty" type="button">Tambah Form</button>
           </div>
         </div>
 
-        <div class="repeat-checks">
-          <label class="repeat-check"><input type="checkbox" id="rep-create-iris" /> <span>Buat Case IRIS baru</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-update-iris" /> <span>Update Summary ke IRIS</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-approval" /> <span>Approval Diptera &amp; Close</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-email" /> <span>Kirim Email &amp; PDF</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-gdoc" /> <span>Upload Google Docs</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-sheet" /> <span>Catat Google Sheets</span></label>
-          <label class="repeat-check"><input type="checkbox" id="rep-md" checked /> <span>Tampilkan Markdown</span></label>
-        </div>
-        <div class="repeat-hint" id="repeat-dependency-hint"></div>
-      </section>
+        <!-- VIEW 2: Riwayat Bersama (Terpisah ASOC & SOC) -->
+        <section id="view-history" class="history-view" role="tabpanel" aria-labelledby="tab-history" hidden>
+          <div class="history-toolbar">
+            <div class="hist-ws-switch" role="group" aria-label="Pilih riwayat workspace">
+              <button class="ws-tab-btn active" id="hist-ws-asoc" type="button" data-hist-ws="asoc" data-ws="asoc" aria-pressed="true">
+                Riwayat ASOC <span class="tab-count" id="hist-count-asoc">0</span>
+              </button>
+              <button class="ws-tab-btn" id="hist-ws-soc" type="button" data-hist-ws="soc" data-ws="soc" aria-pressed="false">
+                Riwayat SOC <span class="tab-count" id="hist-count-soc">0</span>
+              </button>
+            </div>
 
-      <section id="cards" class="cards" aria-live="polite"></section>
-
-      <div id="empty-state" class="empty" hidden>
-        <h2>Belum ada form di antrian</h2>
-        <p id="empty-state-desc">Tambahkan form baru dalam mode Reporting atau Repeating, atau ulangi langsung dari Riwayat ASOC.</p>
-        <button class="btn primary" id="btn-add-empty" type="button">Tambah Form</button>
-      </div>
-    </div>
-
-    <!-- VIEW 2: Riwayat Bersama (Terpisah ASOC & SOC) -->
-    <section id="view-history" class="history-view" role="tabpanel" aria-labelledby="tab-history" hidden>
-      <div class="history-toolbar">
-        <div class="hist-ws-switch" role="group" aria-label="Pilih riwayat workspace">
-          <button class="ws-tab-btn active" id="hist-ws-asoc" type="button" data-hist-ws="asoc" data-ws="asoc" aria-pressed="true">
-            Riwayat ASOC <span class="tab-count" id="hist-count-asoc">0</span>
-          </button>
-          <button class="ws-tab-btn" id="hist-ws-soc" type="button" data-hist-ws="soc" data-ws="soc" aria-pressed="false">
-            Riwayat SOC <span class="tab-count" id="hist-count-soc">0</span>
-          </button>
-        </div>
-
-        <div class="search-box">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-          <input type="search" id="hist-search" placeholder="Cari Case Name, #Case ID, atau nomor tiket…" />
-        </div>
-        <select id="hist-filter-tenant" aria-label="Filter tenant">
-          <option value="">Semua Tenant</option>
-        </select>
-        <select id="hist-filter-mode" aria-label="Filter mode">
-          <option value="">Semua Mode</option>
-          <option value="reporting">Reporting</option>
-          <option value="repeating">Repeating</option>
-        </select>
-        <button class="btn ghost btn-sm" id="btn-hist-refresh" type="button">Segarkan</button>
-      </div>
-
-      <div class="history-table-wrap">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Waktu (WIB)</th>
-              <th>Mode</th>
-              <th>Tenant</th>
-              <th>Tiket</th>
-              <th>Case ID</th>
-              <th>Case Name &amp; Severity</th>
-              <th>Status</th>
-              <th>Analis / Reviewer</th>
-              <th class="col-actions">Aksi</th>
-            </tr>
-          </thead>
-          <tbody id="history-tbody"></tbody>
-        </table>
-      </div>
-      <div id="history-empty" class="empty" hidden>
-        <h2>Belum ada riwayat tersimpan</h2>
-        <p id="history-empty-desc">Setiap laporan yang dikirim pada workspace ini akan tercatat otomatis di sini untuk acuan seluruh tim.</p>
-      </div>
-    </section>
-
-    <!-- VIEW 3: Pusat Approval Webhook n8n -->
-    <section id="view-approvals" class="approvals-view" role="tabpanel" aria-labelledby="tab-approvals" hidden>
-      <div class="approval-meta-bar">
-        <div class="approval-analyst-wrap">
-          <label class="field-label" for="appr-analyst-name">Reviewer / Analis</label>
-          <input type="text" id="appr-analyst-name" placeholder="Nama analis (opsional, tercatat di log keputusan)" spellcheck="false" />
-          <div class="reviewer-locked-pill" id="appr-reviewer-pill" hidden></div>
-        </div>
-        <div class="approval-endpoint-wrap">
-          <span class="field-label">Endpoint Intake n8n</span>
-          <div class="approval-endpoint-row">
-            <code class="approval-endpoint-code" id="appr-endpoint-url">POST /api/approvals</code>
-            <button class="btn ghost btn-xs" id="btn-copy-appr-url" type="button">Salin Endpoint</button>
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input type="search" id="hist-search" placeholder="Cari Case Name, #Case ID, atau nomor tiket…" />
+            </div>
+            <select id="hist-filter-tenant" aria-label="Filter tenant">
+              <option value="">Semua Tenant</option>
+            </select>
+            <select id="hist-filter-mode" aria-label="Filter mode">
+              <option value="">Semua Mode</option>
+              <option value="reporting">Reporting</option>
+              <option value="repeating">Repeating</option>
+            </select>
+            <button class="btn ghost btn-sm" id="btn-hist-refresh" type="button">Segarkan</button>
           </div>
-        </div>
-        <details class="approval-guide">
-          <summary>Panduan Integrasi n8n</summary>
-          <div class="approval-guide-body">
-            <p>Hubungkan node approval workflow n8n ke Diptera dengan pola 4 langkah:</p>
-            <ol>
-              <li><strong>HTTP Request (POST):</strong> Kirim metadata case/alert + <code>{{ $execution.resumeUrl }}</code> ke endpoint <code>/api/approvals</code>.</li>
-              <li><strong>Node Wait (On Webhook Call):</strong> Pause workflow menunggu webhook <code>POST</code> (atau <code>GET</code>) dengan batas waktu opsional.</li>
-              <li><strong>Klik Approve / Deny di Web Diptera:</strong> Server Diptera memanggil <code>resumeUrl</code> membawa payload <code>decision</code> (<code>"approve"</code>/<code>"deny"</code>), <code>approved</code> (<code>true</code>/<code>false</code>), <code>reason</code>, dan <code>decidedBy</code>.</li>
-              <li><strong>Node IF / Switch:</strong> Cek <code>{{ $json.body.decision === 'approve' }}</code> atau <code>{{ $json.body.approved === true }}</code> untuk melanjutkan aksi (IRIS/Email/dll).</li>
-            </ol>
-            <p style="margin-top: 6px; margin-bottom: 0;">Notifikasi penolakan dari n8n (<code>POST /api/rejections</code>) juga muncul otomatis sebagai banner lintas tab dan di filter <strong>Ditolak</strong>.</p>
+
+          <div class="history-table-wrap">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>Waktu (WIB)</th>
+                  <th>Mode</th>
+                  <th>Tenant</th>
+                  <th>Tiket</th>
+                  <th>Case ID</th>
+                  <th>Case Name &amp; Severity</th>
+                  <th>Status</th>
+                  <th>Analis / Reviewer</th>
+                  <th class="col-actions">Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody"></tbody>
+            </table>
           </div>
-        </details>
+          <div id="history-empty" class="empty" hidden>
+            <h2>Belum ada riwayat tersimpan</h2>
+            <p id="history-empty-desc">Laporan yang dikirim pada workspace ini akan tercatat otomatis di sini.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 3: Pusat Approval Webhook n8n -->
+        <section id="view-approvals" class="approvals-view" role="tabpanel" aria-labelledby="tab-approvals" hidden>
+          <div class="approval-toolbar">
+            <div class="appr-status-tabs" role="group" aria-label="Filter status approval">
+              <button class="appr-status-btn active" type="button" data-appr-status="pending" aria-pressed="true">
+                Menunggu <span class="tab-count" id="appr-count-pending">0</span>
+              </button>
+              <button class="appr-status-btn" type="button" data-appr-status="approved" aria-pressed="false">
+                Disetujui <span class="tab-count" id="appr-count-approved">0</span>
+              </button>
+              <button class="appr-status-btn" type="button" data-appr-status="denied" aria-pressed="false">
+                Ditolak <span class="tab-count" id="appr-count-denied">0</span>
+              </button>
+              <button class="appr-status-btn" type="button" data-appr-status="expired" aria-pressed="false">
+                Kedaluwarsa <span class="tab-count" id="appr-count-expired">0</span>
+              </button>
+              <button class="appr-status-btn" type="button" data-appr-status="all" aria-pressed="false">
+                Semua <span class="tab-count" id="appr-count-all">0</span>
+              </button>
+            </div>
+
+            <div class="approval-filters">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <input type="search" id="appr-search" placeholder="Cari Case Name, #Case ID, tenant, workflow…" />
+              </div>
+
+              <select id="appr-filter-ws" aria-label="Filter workspace approval">
+                <option value="all">Semua Workspace</option>
+                <option value="asoc">ASOC</option>
+                <option value="soc">SOC</option>
+              </select>
+
+              <select id="appr-filter-sev" aria-label="Filter severity approval">
+                <option value="">Semua Severity</option>
+                <option value="CRITICAL">CRITICAL</option>
+                <option value="HIGH">HIGH</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="LOW">LOW</option>
+              </select>
+
+              <button class="btn ghost btn-sm" id="btn-appr-refresh" type="button">Segarkan</button>
+
+              <div class="approval-reviewer">
+                <label class="sr-only" for="appr-analyst-name">Reviewer</label>
+                <input type="text" id="appr-analyst-name" placeholder="Nama reviewer (opsional)" spellcheck="false" />
+                <div class="reviewer-locked-pill" id="appr-reviewer-pill" hidden></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="approvals-list" class="approvals-list" aria-live="polite"></div>
+
+          <div id="approvals-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3l7 4v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V7l7-4z" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
+            <h2 id="approvals-empty-title">Tidak ada permintaan approval menunggu</h2>
+            <p id="approvals-empty-desc">Permintaan approval dari workflow n8n akan terkumpul di sini.</p>
+          </div>
+        </section>
       </div>
-
-      <div class="approval-toolbar">
-        <div class="appr-status-tabs" role="group" aria-label="Filter status approval">
-          <button class="appr-status-btn active" type="button" data-appr-status="pending" aria-pressed="true">
-            Menunggu <span class="tab-count" id="appr-count-pending">0</span>
-          </button>
-          <button class="appr-status-btn" type="button" data-appr-status="approved" aria-pressed="false">
-            Disetujui <span class="tab-count" id="appr-count-approved">0</span>
-          </button>
-          <button class="appr-status-btn" type="button" data-appr-status="denied" aria-pressed="false">
-            Ditolak <span class="tab-count" id="appr-count-denied">0</span>
-          </button>
-          <button class="appr-status-btn" type="button" data-appr-status="expired" aria-pressed="false">
-            Kedaluwarsa <span class="tab-count" id="appr-count-expired">0</span>
-          </button>
-          <button class="appr-status-btn" type="button" data-appr-status="all" aria-pressed="false">
-            Semua <span class="tab-count" id="appr-count-all">0</span>
-          </button>
-        </div>
-
-        <div class="search-box">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
-          <input type="search" id="appr-search" placeholder="Cari Case Name, #Case ID, tenant, workflow, atau alasan…" />
-        </div>
-
-        <select id="appr-filter-ws" aria-label="Filter workspace approval">
-          <option value="all">Semua Workspace</option>
-          <option value="asoc">ASOC</option>
-          <option value="soc">SOC</option>
-        </select>
-
-        <select id="appr-filter-sev" aria-label="Filter severity approval">
-          <option value="">Semua Severity</option>
-          <option value="CRITICAL">CRITICAL</option>
-          <option value="HIGH">HIGH</option>
-          <option value="MEDIUM">MEDIUM</option>
-          <option value="LOW">LOW</option>
-        </select>
-
-        <button class="btn ghost btn-sm" id="btn-appr-refresh" type="button">Segarkan</button>
-      </div>
-
-      <div id="approvals-list" class="approvals-list" aria-live="polite"></div>
-
-      <div id="approvals-empty" class="empty" hidden>
-        <div class="empty-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 3l7 4v5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V7l7-4z" />
-            <path d="M9 12l2 2 4-4" />
-          </svg>
-        </div>
-        <h2 id="approvals-empty-title">Tidak ada permintaan approval menunggu</h2>
-        <p id="approvals-empty-desc">Permintaan approval dari workflow n8n yang dikirim ke endpoint Diptera akan langsung terkumpul di halaman ini.</p>
-      </div>
-    </section>
-  </main>
+    </main>
+  </div>
 
   <!-- Modal Akun & Manajemen User -->
   <div id="user-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
@@ -633,10 +668,10 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="config.js"></script>
-  <script src="numbering.js"></script>
-  <script src="extract.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js?v=20261124b"></script>
+  <script src="numbering.js?v=20261124b"></script>
+  <script src="extract.js?v=20261124b"></script>
+  <script src="app.js?v=20261124d"></script>
 </body>
 
 </html>
