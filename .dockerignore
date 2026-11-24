@@ -2,7 +2,23 @@ node_modules
 test
 .git
 .gitignore
+.env
+.env.*
+data
+pgdata
+postgres-data
+backups
+*.sql
+*.dump
+*.bak
+*.log
+*.key
+*.pem
 *.tar
 *.tar.gz
 npm-debug.log*
 .DS_Store
+Alpha Reporter*.json
+*.workflow.json
+finding.md
+update.md

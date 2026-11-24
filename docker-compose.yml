@@ -1,8 +1,27 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: diptera-postgres
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-diptera}"
+      POSTGRES_USER: "${POSTGRES_USER:-diptera}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-diptera_secret_change_me}"
+    volumes:
+      - diptera_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-diptera} -d ${POSTGRES_DB:-diptera}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   diptera:
     build: .
     image: diptera:unified
     container_name: diptera
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${APP_PORT:-8787}:8787"
     environment:
@@ -18,9 +37,26 @@ services:
       SOC_IRIS_BASE_URL: "${SOC_IRIS_BASE_URL:-}"
       SOC_TENANT_OPTIONS: '${SOC_TENANT_OPTIONS:-["petra","praditauniversity","wicida","instikibali","ikmicirebon","sgu"]}'
       APPROVAL_API_SECRET: "${APPROVAL_API_SECRET:-}"
+      APPROVAL_API_SECRET_HASH: "${APPROVAL_API_SECRET_HASH:-}"
       APPROVAL_ALLOWED_HOSTS: "${APPROVAL_ALLOWED_HOSTS:-}"
       APPROVAL_REWRITE_RESUME_HOST: "${APPROVAL_REWRITE_RESUME_HOST:-false}"
+      PGHOST: "${PGHOST:-postgres}"
+      PGPORT: "${PGPORT:-5432}"
+      PGDATABASE: "${POSTGRES_DB:-diptera}"
+      PGUSER: "${POSTGRES_USER:-diptera}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:-diptera_secret_change_me}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      AUTH_ENABLED: "${AUTH_ENABLED:-true}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
+      ADMIN_DISPLAY_NAME: "${ADMIN_DISPLAY_NAME:-Administrator}"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
       DATA_DIR: "/app/data"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+
+volumes:
+  diptera_pgdata:

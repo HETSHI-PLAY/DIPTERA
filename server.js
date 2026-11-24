@@ -15,6 +15,8 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const numbering = require('./numbering.js');
+const db = require('./db.js');
+const auth = require('./auth.js');
 
 const ROOT = __dirname;
 
@@ -246,10 +248,14 @@ function sendWebhookResume({ url, method = 'POST', payload = {}, timeoutMs = DEF
   });
 }
 
-function checkApprovalSecret(req, secret) {
-  if (!secret) return true;
+function checkApprovalSecret(req, secret, secretHash = '') {
+  if (!secret && !secretHash) return true;
   const provided = String(req.headers['x-diptera-secret'] || '').trim();
-  if (!provided || provided.length !== secret.length) return false;
+  if (!provided) return false;
+  if (secretHash) {
+    return auth.verifyApiSecretHash(provided, secretHash);
+  }
+  if (provided.length !== secret.length) return false;
   return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(secret));
 }
 
@@ -294,14 +300,25 @@ function parseEnvConfig(env = process.env) {
     .map((h) => h.trim().toLowerCase())
     .filter(Boolean);
 
+  const hasPgConfig = db.hasPostgresConfig(env);
+  const authExplicit = env.AUTH_ENABLED !== undefined && String(env.AUTH_ENABLED).trim() !== '';
+  const authEnabled = authExplicit ? parseBoolEnv(env.AUTH_ENABLED) : hasPgConfig;
+
   return {
     defaultWorkspace,
     publicUrl: String(env.DIPTERA_PUBLIC_URL || '').trim().replace(/\/+$/, ''),
     approvalSecret: String(env.APPROVAL_API_SECRET || '').trim(),
+    approvalSecretHash: String(env.APPROVAL_API_SECRET_HASH || '').trim(),
     approvalAllowedHosts,
     approvalRewriteResumeHost: parseBoolEnv(env.APPROVAL_REWRITE_RESUME_HOST),
     approvalAllowInsecureTls: parseBoolEnv(env.APPROVAL_ALLOW_INSECURE_TLS),
     approvalResumeTimeoutMs: Math.max(2000, Number(env.APPROVAL_RESUME_TIMEOUT_MS) || DEFAULT_APPROVAL_RESUME_TIMEOUT_MS),
+    hasPgConfig,
+    authEnabled,
+    sessionTtlHours: Math.max(1, Number(env.SESSION_TTL_HOURS) || 168),
+    cookieSecure: parseBoolEnv(env.COOKIE_SECURE),
+    adminUsername: String(env.ADMIN_USERNAME || 'admin').trim() || 'admin',
+    adminDisplayName: String(env.ADMIN_DISPLAY_NAME || 'Administrator').trim() || 'Administrator',
     workspaces: { asoc, soc },
   };
 }
@@ -336,14 +353,20 @@ function atomicWriteJson(filePath, data) {
   fs.renameSync(tmp, filePath);
 }
 
-function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
+function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env, storeOpts = {}) {
   const countersPath = path.join(dataDir, 'counters.json');
   const historyPath = path.join(dataDir, 'history.json');
   const approvalsPath = path.join(dataDir, 'approvals.json');
   const rejectionsPath = path.join(dataDir, 'rejections.json');
   const envCfg = parseEnvConfig(env);
+  const pgBackend = storeOpts.pgBackend !== undefined
+    ? storeOpts.pgBackend
+    : (envCfg.hasPgConfig ? db.createPostgresBackend({ env }) : null);
+  const ownsPgBackend = Boolean(pgBackend && storeOpts.pgBackend === undefined);
 
-  fs.mkdirSync(dataDir, { recursive: true });
+  if (!pgBackend) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
 
   function defaultWorkspaceCounters(ws) {
     const cfg = envCfg.workspaces[ws];
@@ -378,11 +401,10 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
     };
   }
 
-  function loadCounters() {
+  function readLegacyJsonCounters() {
     try {
       const raw = fs.readFileSync(countersPath, 'utf8');
       const parsed = JSON.parse(raw);
-      // v2 format
       if (parsed && parsed.version === 2 && (parsed.asoc || parsed.soc)) {
         return {
           version: 2,
@@ -390,35 +412,67 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           soc: mergeWorkspaceCounters('soc', parsed.soc),
         };
       }
-      // v1 migration -> v2 (preserve all existing ASOC counters)
       const migrated = {
         version: 2,
         asoc: mergeWorkspaceCounters('asoc', parsed),
         soc: defaultWorkspaceCounters('soc'),
       };
       migrated.asoc.updatedBy = 'migrated-v1';
-      atomicWriteJson(countersPath, migrated);
       return migrated;
     } catch {
-      const seeded = {
-        version: 2,
-        asoc: defaultWorkspaceCounters('asoc'),
-        soc: defaultWorkspaceCounters('soc'),
-      };
-      atomicWriteJson(countersPath, seeded);
-      return seeded;
+      return null;
     }
+  }
+
+  function loadCounters() {
+    const existing = readLegacyJsonCounters();
+    if (existing) {
+      if (existing.asoc?.updatedBy === 'migrated-v1' && !pgBackend) {
+        atomicWriteJson(countersPath, existing);
+      }
+      return existing;
+    }
+    const seeded = {
+      version: 2,
+      asoc: defaultWorkspaceCounters('asoc'),
+      soc: defaultWorkspaceCounters('soc'),
+    };
+    if (!pgBackend) atomicWriteJson(countersPath, seeded);
+    return seeded;
+  }
+
+  function normalizeHistoryItems(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map((item) => ({
+      ...item,
+      workspace: normalizeWorkspace(item.workspace, 'asoc'),
+    }));
+  }
+
+  function normalizeApprovalItems(list) {
+    if (!Array.isArray(list)) return [];
+    const allowedStatus = new Set(['pending', 'approved', 'denied', 'revised', 'expired']);
+    return list.map((item) => ({
+      ...item,
+      workspace: normalizeWorkspace(item.workspace, 'asoc'),
+      status: allowedStatus.has(item.status) ? item.status : 'pending',
+    }));
+  }
+
+  function normalizeRejectionItems(list) {
+    if (!Array.isArray(list)) return [];
+    const allowedStatus = new Set(['open', 'acknowledged', 'resolved']);
+    return list.map((item) => ({
+      ...item,
+      workspace: normalizeWorkspace(item.workspace, 'asoc'),
+      status: allowedStatus.has(item.status) ? item.status : 'open',
+    }));
   }
 
   function loadHistory() {
     try {
       const raw = fs.readFileSync(historyPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.map((item) => ({
-        ...item,
-        workspace: normalizeWorkspace(item.workspace, 'asoc'),
-      }));
+      return normalizeHistoryItems(JSON.parse(raw));
     } catch {
       return [];
     }
@@ -427,14 +481,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
   function loadApprovals() {
     try {
       const raw = fs.readFileSync(approvalsPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      const allowedStatus = new Set(['pending', 'approved', 'denied', 'revised', 'expired']);
-      return parsed.map((item) => ({
-        ...item,
-        workspace: normalizeWorkspace(item.workspace, 'asoc'),
-        status: allowedStatus.has(item.status) ? item.status : 'pending',
-      }));
+      return normalizeApprovalItems(JSON.parse(raw));
     } catch {
       return [];
     }
@@ -443,32 +490,95 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
   function loadRejections() {
     try {
       const raw = fs.readFileSync(rejectionsPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      const allowedStatus = new Set(['open', 'acknowledged', 'resolved']);
-      return parsed.map((item) => ({
-        ...item,
-        workspace: normalizeWorkspace(item.workspace, 'asoc'),
-        status: allowedStatus.has(item.status) ? item.status : 'open',
-      }));
+      return normalizeRejectionItems(JSON.parse(raw));
     } catch {
       return [];
     }
   }
 
-  let counters = loadCounters();
-  let history = loadHistory();
-  let approvals = loadApprovals();
-  let rejections = loadRejections();
+  let counters = pgBackend
+    ? { version: 2, asoc: defaultWorkspaceCounters('asoc'), soc: defaultWorkspaceCounters('soc') }
+    : loadCounters();
+  let history = pgBackend ? [] : loadHistory();
+  let approvals = pgBackend ? [] : loadApprovals();
+  let rejections = pgBackend ? [] : loadRejections();
   const inFlightDecisions = new Set();
   const inFlightRejectionResumes = new Set();
   let lock = Promise.resolve();
+  let pgPending = [];
 
   function withLock(fn) {
-    const run = lock.then(() => fn());
+    const run = lock.then(async () => {
+      const result = await fn();
+      await flushPg();
+      return result;
+    });
     lock = run.catch(() => {});
     return run;
   }
+
+  function queuePg(fn) {
+    if (!pgBackend) return;
+    pgPending.push(fn);
+  }
+
+  async function flushPg() {
+    if (!pgBackend || !pgPending.length) return;
+    const tasks = pgPending.splice(0, pgPending.length);
+    for (const fn of tasks) {
+      await fn();
+    }
+  }
+
+  const ready = (async () => {
+    if (!pgBackend) return;
+    await pgBackend.connectWithRetry();
+    await pgBackend.initSchema();
+    const dbData = await pgBackend.loadAllDomainData();
+
+    if (Object.keys(dbData.countersByWs).length === 0) {
+      const jsonCounters = readLegacyJsonCounters();
+      counters = jsonCounters || {
+        version: 2,
+        asoc: defaultWorkspaceCounters('asoc'),
+        soc: defaultWorkspaceCounters('soc'),
+      };
+      await pgBackend.upsertWorkspaceCounter('asoc', counters.asoc);
+      await pgBackend.upsertWorkspaceCounter('soc', counters.soc);
+    } else {
+      counters = {
+        version: 2,
+        asoc: mergeWorkspaceCounters('asoc', dbData.countersByWs.asoc),
+        soc: mergeWorkspaceCounters('soc', dbData.countersByWs.soc),
+      };
+      if (!dbData.countersByWs.asoc) await pgBackend.upsertWorkspaceCounter('asoc', counters.asoc);
+      if (!dbData.countersByWs.soc) await pgBackend.upsertWorkspaceCounter('soc', counters.soc);
+    }
+
+    if (dbData.history.length === 0) {
+      const jsonHist = loadHistory().slice(0, MAX_HISTORY);
+      history = jsonHist;
+      for (const h of jsonHist) await pgBackend.upsertHistory(h);
+    } else {
+      history = normalizeHistoryItems(dbData.history);
+    }
+
+    if (dbData.approvals.length === 0) {
+      const jsonAppr = loadApprovals().slice(0, MAX_APPROVALS);
+      approvals = jsonAppr;
+      for (const a of jsonAppr) await pgBackend.upsertApproval(a);
+    } else {
+      approvals = normalizeApprovalItems(dbData.approvals);
+    }
+
+    if (dbData.rejections.length === 0) {
+      const jsonRej = loadRejections().slice(0, MAX_REJECTIONS);
+      rejections = jsonRej;
+      for (const r of jsonRej) await pgBackend.upsertRejection(r);
+    } else {
+      rejections = normalizeRejectionItems(dbData.rejections);
+    }
+  })();
 
   function sanitizeHistoryPatch(input) {
     // Sengaja hanya menerima field metadata + markdown; raw alert TIDAK pernah disimpan.
@@ -512,6 +622,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
     }
     if (input.rejectionId !== undefined) out.rejectionId = str(input.rejectionId, 120);
     if (input.rejectionReason !== undefined) out.rejectionReason = str(input.rejectionReason, 2000);
+    if (input.createdByUserId !== undefined) out.createdByUserId = str(input.createdByUserId, 120);
+    if (input.createdByUsername !== undefined) out.createdByUsername = str(input.createdByUsername, 120);
+    if (input.createdByName !== undefined) out.createdByName = str(input.createdByName, 160);
+    if (input.reviewedByUserId !== undefined) out.reviewedByUserId = str(input.reviewedByUserId, 120);
+    if (input.reviewedByUsername !== undefined) out.reviewedByUsername = str(input.reviewedByUsername, 120);
+    if (input.reviewedByName !== undefined) out.reviewedByName = str(input.reviewedByName, 160);
+    if (input.reviewedAt !== undefined) out.reviewedAt = str(input.reviewedAt, 64);
+    if (input.reviewDecision !== undefined) out.reviewDecision = str(input.reviewDecision, 32);
     return out;
   }
 
@@ -560,22 +678,61 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
     if (ws && counters[ws]) {
       counters[ws].updatedAt = new Date().toISOString();
       counters[ws].updatedBy = updatedBy || 'api';
+      if (pgBackend) {
+        const snap = JSON.parse(JSON.stringify(counters[ws]));
+        queuePg(() => pgBackend.upsertWorkspaceCounter(ws, snap));
+      }
+    } else if (pgBackend) {
+      for (const w of WORKSPACES) {
+        const snap = JSON.parse(JSON.stringify(counters[w]));
+        queuePg(() => pgBackend.upsertWorkspaceCounter(w, snap));
+      }
     }
-    atomicWriteJson(countersPath, counters);
+    if (!pgBackend) atomicWriteJson(countersPath, counters);
   }
 
-  function saveHistory() {
+  function saveHistory(changedEntry = null, deletedId = null) {
     if (history.length > MAX_HISTORY) history = history.slice(0, MAX_HISTORY);
+    if (pgBackend) {
+      if (changedEntry) {
+        const snap = JSON.parse(JSON.stringify(changedEntry));
+        queuePg(() => pgBackend.upsertHistory(snap));
+      }
+      if (deletedId) {
+        queuePg(() => pgBackend.deleteHistory(deletedId));
+      }
+      return;
+    }
     atomicWriteJson(historyPath, history);
   }
 
-  function saveApprovals() {
+  function saveApprovals(changedEntry = null, deletedId = null) {
     if (approvals.length > MAX_APPROVALS) approvals = approvals.slice(0, MAX_APPROVALS);
+    if (pgBackend) {
+      if (changedEntry) {
+        const snap = JSON.parse(JSON.stringify(changedEntry));
+        queuePg(() => pgBackend.upsertApproval(snap));
+      }
+      if (deletedId) {
+        queuePg(() => pgBackend.deleteApproval(deletedId));
+      }
+      return;
+    }
     atomicWriteJson(approvalsPath, approvals);
   }
 
-  function saveRejections() {
+  function saveRejections(changedEntry = null, deletedId = null) {
     if (rejections.length > MAX_REJECTIONS) rejections = rejections.slice(0, MAX_REJECTIONS);
+    if (pgBackend) {
+      if (changedEntry) {
+        const snap = JSON.parse(JSON.stringify(changedEntry));
+        queuePg(() => pgBackend.upsertRejection(snap));
+      }
+      if (deletedId) {
+        queuePg(() => pgBackend.deleteRejection(deletedId));
+      }
+      return;
+    }
     atomicWriteJson(rejectionsPath, rejections);
   }
 
@@ -603,6 +760,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
             severity: item.severity || null,
             classification: item.classification || null,
             reason: item.reason || null,
+            createdByName: item.createdByName || null,
             decidedBy: item.decidedBy || null,
             retryInMinutes: item.retryInMinutes ?? null,
             nextRetryAt: item.nextRetryAt || null,
@@ -643,6 +801,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       item.resolvedReason = resolvedReason || 'resolved';
       item.updatedAt = nowIso;
       rejChanged = true;
+      if (pgBackend) saveRejections(item);
     }
     for (const appr of approvals) {
       if (appr.status !== 'denied') continue;
@@ -655,9 +814,10 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       appr.revisedAt = nowIso;
       appr.updatedAt = nowIso;
       apprChanged = true;
+      if (pgBackend) saveApprovals(appr);
     }
-    if (rejChanged) saveRejections();
-    if (apprChanged) saveApprovals();
+    if (!pgBackend && rejChanged) saveRejections();
+    if (!pgBackend && apprChanged) saveApprovals();
     return rejChanged || apprChanged;
   }
 
@@ -718,6 +878,29 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
 
     const now = new Date().toISOString();
     const id = String(payload.id || '').trim() || ('rej_' + crypto.randomBytes(6).toString('hex'));
+
+    // Link ke approval dan history lebih awal untuk warisi pembuat & reviewer case
+    let linkedAppr = approvalId ? approvals.find((a) => a.id === approvalId) : null;
+    if (!linkedAppr) {
+      linkedAppr = approvals.find((a) => a.status === 'denied' && (
+        (execId && a.execId === execId) ||
+        (jobId && a.jobId === jobId) ||
+        (irisCaseId && a.irisCaseId === irisCaseId && a.workspace === ws)
+      ));
+    }
+
+    let linkedHist = jobId ? history.find((h) => h.id === jobId) : null;
+    if (!linkedHist && irisCaseId) {
+      linkedHist = history.find((h) => h.workspace === ws && h.irisCaseId === irisCaseId);
+    }
+
+    const createdByUserId = str(payload.createdByUserId, 120) || linkedAppr?.createdByUserId || linkedHist?.createdByUserId || null;
+    const createdByUsername = str(payload.createdByUsername, 120) || linkedAppr?.createdByUsername || linkedHist?.createdByUsername || null;
+    const createdByName = str(payload.createdByName || payload.createdBy, 160) || linkedAppr?.createdByName || linkedHist?.createdByName || null;
+    const decidedByUserId = str(payload.decidedByUserId, 120) || linkedAppr?.decidedByUserId || null;
+    const decidedByUsername = str(payload.decidedByUsername, 120) || linkedAppr?.decidedByUsername || null;
+    const finalDecidedBy = decidedBy || linkedAppr?.decidedBy || null;
+
     const record = {
       id,
       workspace: ws,
@@ -735,7 +918,12 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       classification,
       openDate,
       reason,
-      decidedBy,
+      createdByUserId,
+      createdByUsername,
+      createdByName,
+      decidedByUserId,
+      decidedByUsername,
+      decidedBy: finalDecidedBy,
       retryInMinutes,
       nextRetryAt,
       deadlineAt,
@@ -747,6 +935,8 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       source: str(payload.source, 64) || 'n8n-rejection',
       acknowledgedBy: null,
       acknowledgedAt: null,
+      completedByUserId: null,
+      completedByUsername: null,
       completedBy: null,
       completedAt: null,
       resolvedAt: null,
@@ -756,37 +946,30 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
     };
 
     rejections.unshift(record);
-    saveRejections();
+    saveRejections(record);
 
-    // Link ke approval terkait (by approvalId, atau latest denied matching execId/jobId/irisCaseId)
-    let linkedAppr = approvalId ? approvals.find((a) => a.id === approvalId) : null;
-    if (!linkedAppr) {
-      linkedAppr = approvals.find((a) => a.status === 'denied' && (
-        (execId && a.execId === execId) ||
-        (jobId && a.jobId === jobId) ||
-        (irisCaseId && a.irisCaseId === irisCaseId && a.workspace === ws)
-      ));
-    }
     if (linkedAppr) {
       linkedAppr.rejectionId = record.id;
       linkedAppr.rejectionNotifiedAt = now;
       linkedAppr.nextRetryAt = nextRetryAt;
       linkedAppr.rejectionStatus = 'open';
       linkedAppr.updatedAt = now;
-      saveApprovals();
+      saveApprovals(linkedAppr);
     }
 
-    // Link ke history terkait
-    let linkedHist = jobId ? history.find((h) => h.id === jobId) : null;
-    if (!linkedHist && irisCaseId) {
-      linkedHist = history.find((h) => h.workspace === ws && h.irisCaseId === irisCaseId);
-    }
     if (linkedHist) {
       linkedHist.rejectionId = record.id;
       linkedHist.rejectionReason = reason;
       linkedHist.approvalStatus = 'denied';
+      if (finalDecidedBy && !linkedHist.reviewedByName) {
+        linkedHist.reviewedByUserId = decidedByUserId;
+        linkedHist.reviewedByUsername = decidedByUsername;
+        linkedHist.reviewedByName = finalDecidedBy;
+        linkedHist.reviewedAt = linkedAppr?.decidedAt || now;
+        linkedHist.reviewDecision = 'deny';
+      }
       linkedHist.updatedAt = now;
-      saveHistory();
+      saveHistory(linkedHist);
     }
 
     return {
@@ -809,19 +992,22 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         item.status = 'expired';
         item.updatedAt = nowIso;
         changed = true;
-        if (item.jobId) {
-          const h = history.find((x) => x.id === item.jobId);
-          if (h && h.approvalStatus !== 'expired') {
-            h.approvalId = item.id;
-            h.approvalStatus = 'expired';
-            h.updatedAt = nowIso;
-            histChanged = true;
-          }
+        if (pgBackend) saveApprovals(item);
+        const ws = normalizeWorkspace(item.workspace, 'asoc');
+        const h = item.jobId
+          ? history.find((x) => x.id === item.jobId)
+          : (item.irisCaseId ? history.find((x) => normalizeWorkspace(x.workspace, 'asoc') === ws && x.irisCaseId === item.irisCaseId) : null);
+        if (h && h.approvalStatus !== 'expired') {
+          h.approvalId = item.id;
+          h.approvalStatus = 'expired';
+          h.updatedAt = nowIso;
+          histChanged = true;
+          if (pgBackend) saveHistory(h);
         }
       }
     }
-    if (changed) saveApprovals();
-    if (histChanged) saveHistory();
+    if (!pgBackend && changed) saveApprovals();
+    if (!pgBackend && histChanged) saveHistory();
     return changed;
   }
 
@@ -858,13 +1044,29 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
   }
 
   function syncHistoryApprovalStatus(item) {
-    if (!item || !item.jobId) return false;
-    const h = history.find((x) => x.id === item.jobId);
+    if (!item) return false;
+    const ws = normalizeWorkspace(item.workspace, 'asoc');
+    let h = item.jobId ? history.find((x) => x.id === item.jobId) : null;
+    if (!h && item.irisCaseId) {
+      h = history.find((x) => normalizeWorkspace(x.workspace, 'asoc') === ws && x.irisCaseId === item.irisCaseId);
+    }
     if (!h) return false;
     h.approvalId = item.id;
     h.approvalStatus = item.status;
+    if (item.decidedBy || item.decidedByUserId) {
+      h.reviewedByUserId = item.decidedByUserId || h.reviewedByUserId || null;
+      h.reviewedByUsername = item.decidedByUsername || h.reviewedByUsername || null;
+      h.reviewedByName = item.decidedBy || h.reviewedByName || null;
+      h.reviewedAt = item.decidedAt || item.updatedAt || new Date().toISOString();
+      h.reviewDecision = item.decision || h.reviewDecision || null;
+    }
+    if (item.createdByName && !h.createdByName) {
+      h.createdByUserId = item.createdByUserId || null;
+      h.createdByUsername = item.createdByUsername || null;
+      h.createdByName = item.createdByName;
+    }
     h.updatedAt = new Date().toISOString();
-    saveHistory();
+    saveHistory(h);
     return true;
   }
 
@@ -873,6 +1075,15 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
   }
 
   return {
+    ready,
+    hasPostgres: Boolean(pgBackend),
+    async close() {
+      await ready.catch(() => {});
+      await withLock(() => {}).catch(() => {});
+      if (ownsPgBackend && pgBackend) {
+        await pgBackend.close();
+      }
+    },
     getState() {
       refreshExpiredApprovals();
       const asocCounters = JSON.parse(JSON.stringify(counters.asoc));
@@ -1001,7 +1212,18 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         if (mode && String(item.mode || '').toLowerCase() !== mode) return false;
         if (status && String(item.status || '').toLowerCase() !== status) return false;
         if (q) {
-          const hay = [item.caseName, item.irisCaseId, item.ticketNumber, item.tenant, item.severity, item.classification]
+          const hay = [
+            item.caseName,
+            item.irisCaseId,
+            item.ticketNumber,
+            item.tenant,
+            item.severity,
+            item.classification,
+            item.createdByName,
+            item.createdByUsername,
+            item.reviewedByName,
+            item.reviewedByUsername,
+          ]
             .filter(Boolean)
             .join(' ')
             .toLowerCase();
@@ -1027,7 +1249,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       return history.find((x) => x.id === id) || null;
     },
 
-    createHistory(payload = {}) {
+    createHistory(payload = {}, actorUser = null) {
       return withLock(() => {
         const ws = normalizeWorkspace(payload.workspace, 'asoc');
         const bucket = counters[ws];
@@ -1035,6 +1257,10 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         const now = new Date().toISOString();
         const id = String(payload.id || '').trim() || ('job_' + crypto.randomBytes(6).toString('hex'));
         const existingIdx = history.findIndex((x) => x.id === id);
+
+        const actorId = actorUser?.id || clean.createdByUserId || null;
+        const actorUsername = actorUser?.username || clean.createdByUsername || null;
+        const actorName = (actorUser ? (actorUser.displayName || actorUser.username) : null) || clean.createdByName || null;
 
         const entry = {
           id,
@@ -1055,29 +1281,49 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           errorMsg: clean.errorMsg || null,
           markdown: clean.markdown || null,
           source: clean.source || ('diptera-' + ws),
+          createdByUserId: actorId,
+          createdByUsername: actorUsername,
+          createdByName: actorName,
+          reviewedByUserId: clean.reviewedByUserId || null,
+          reviewedByUsername: clean.reviewedByUsername || null,
+          reviewedByName: clean.reviewedByName || null,
+          reviewedAt: clean.reviewedAt || null,
+          reviewDecision: clean.reviewDecision || null,
         };
 
+        let savedRecord;
         if (existingIdx >= 0) {
-          history[existingIdx] = { ...history[existingIdx], ...clean, workspace: ws, updatedAt: now };
+          const prev = history[existingIdx];
+          savedRecord = {
+            ...prev,
+            ...clean,
+            workspace: ws,
+            createdByUserId: prev.createdByUserId || actorId,
+            createdByUsername: prev.createdByUsername || actorUsername,
+            createdByName: prev.createdByName || actorName,
+            updatedAt: now,
+          };
+          history[existingIdx] = savedRecord;
         } else {
           history.unshift(entry);
+          savedRecord = entry;
         }
 
         let countersChanged = false;
-        if (entry.mode === 'reporting') {
-          if (entry.tenant && entry.ticketNumber && shouldAdvance(bucket.ticketsByTenant[entry.tenant], entry.ticketNumber, false)) {
-            bucket.ticketsByTenant[entry.tenant] = entry.ticketNumber;
-            if (!bucket.tenants.includes(entry.tenant)) bucket.tenants.push(entry.tenant);
+        if (savedRecord.mode === 'reporting') {
+          if (savedRecord.tenant && savedRecord.ticketNumber && shouldAdvance(bucket.ticketsByTenant[savedRecord.tenant], savedRecord.ticketNumber, false)) {
+            bucket.ticketsByTenant[savedRecord.tenant] = savedRecord.ticketNumber;
+            if (!bucket.tenants.includes(savedRecord.tenant)) bucket.tenants.push(savedRecord.tenant);
             countersChanged = true;
           }
-          if (entry.irisCaseId && shouldAdvance(bucket.lastIrisCaseId, entry.irisCaseId, false)) {
-            bucket.lastIrisCaseId = entry.irisCaseId;
+          if (savedRecord.irisCaseId && shouldAdvance(bucket.lastIrisCaseId, savedRecord.irisCaseId, false)) {
+            bucket.lastIrisCaseId = savedRecord.irisCaseId;
             countersChanged = true;
           }
         }
         if (countersChanged) saveCounters(ws, 'history-create');
-        saveHistory();
-        return history.find((x) => x.id === id);
+        saveHistory(savedRecord);
+        return savedRecord;
       });
     },
 
@@ -1088,10 +1334,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         const ws = normalizeWorkspace(payload.workspace || history[idx].workspace, 'asoc');
         const bucket = counters[ws];
         const clean = sanitizeHistoryPatch(payload);
+        const prev = history[idx];
         const updated = {
-          ...history[idx],
+          ...prev,
           ...clean,
           workspace: ws,
+          createdByUserId: prev.createdByUserId || clean.createdByUserId || null,
+          createdByUsername: prev.createdByUsername || clean.createdByUsername || null,
+          createdByName: prev.createdByName || clean.createdByName || null,
           updatedAt: new Date().toISOString(),
         };
         history[idx] = updated;
@@ -1110,7 +1360,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           }
         }
         if (countersChanged) saveCounters(ws, 'history-update');
-        saveHistory();
+        saveHistory(updated);
         return updated;
       });
     },
@@ -1120,7 +1370,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         const before = history.length;
         history = history.filter((x) => x.id !== id);
         if (history.length !== before) {
-          saveHistory();
+          saveHistory(null, id);
           return true;
         }
         return false;
@@ -1152,10 +1402,11 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
               item.status = 'expired';
               item.updatedAt = nowIso;
               expiredCount++;
+              if (pgBackend) saveApprovals(item);
               syncHistoryApprovalStatus(item);
             }
           }
-          if (expiredCount > 0) saveApprovals();
+          if (!pgBackend && expiredCount > 0) saveApprovals();
           return {
             ok: true,
             workspace: ws,
@@ -1188,11 +1439,25 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           markdown: payload.markdown || undefined,
           status: event === 'case_created' ? 'running' : (payload.status || 'done'),
           source: 'n8n-callback',
+          createdByUserId: payload.createdByUserId || undefined,
+          createdByName: payload.createdBy || payload.createdByName || undefined,
         });
 
         let record = null;
         if (existingIdx >= 0) {
-          record = { ...history[existingIdx], ...patch, workspace: ws, updatedAt: now };
+          const prev = history[existingIdx];
+          record = {
+            ...prev,
+            ...patch,
+            workspace: ws,
+            createdByUserId: prev.createdByUserId || patch.createdByUserId || null,
+            createdByUsername: prev.createdByUsername || patch.createdByUsername || null,
+            createdByName: prev.createdByName || patch.createdByName || null,
+            reviewedByUserId: prev.reviewedByUserId || null,
+            reviewedByUsername: prev.reviewedByUsername || null,
+            reviewedByName: prev.reviewedByName || null,
+            updatedAt: now,
+          };
           history[existingIdx] = record;
         } else {
           const id = jobId || ('n8n_' + crypto.randomBytes(6).toString('hex'));
@@ -1215,6 +1480,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
             errorMsg: null,
             markdown: patch.markdown || null,
             source: 'n8n-callback',
+            createdByUserId: patch.createdByUserId || null,
+            createdByUsername: patch.createdByUsername || null,
+            createdByName: patch.createdByName || null,
+            reviewedByUserId: null,
+            reviewedByUsername: null,
+            reviewedByName: null,
+            reviewedAt: null,
+            reviewDecision: null,
           };
           history.unshift(record);
         }
@@ -1232,7 +1505,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         }
 
         if (countersChanged) saveCounters(ws, 'n8n-callback:' + event);
-        saveHistory();
+        saveHistory(record);
         return {
           ok: true,
           workspace: ws,
@@ -1272,7 +1545,10 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
             item.classification,
             item.summary,
             item.reason,
+            item.createdByName,
+            item.createdByUsername,
             item.decidedBy,
+            item.decidedByUsername,
             item.execId,
           ]
             .filter(Boolean)
@@ -1350,6 +1626,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         }
 
         const now = new Date().toISOString();
+        let linkedHist = jobId ? history.find((h) => h.id === jobId) : null;
+        if (!linkedHist && irisCaseId) {
+          linkedHist = history.find((h) => normalizeWorkspace(h.workspace, 'asoc') === ws && h.irisCaseId === irisCaseId);
+        }
+        const createdByUserId = str(payload.createdByUserId, 120) || linkedHist?.createdByUserId || null;
+        const createdByUsername = str(payload.createdByUsername, 120) || linkedHist?.createdByUsername || null;
+        const createdByName = str(payload.createdByName || payload.createdBy, 160) || linkedHist?.createdByName || null;
+
         const existingPending = approvals.find((x) => x.status === 'pending' && x.resumeUrl === resumeUrl);
         if (existingPending) {
           if (caseName) existingPending.caseName = caseName;
@@ -1365,9 +1649,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           if (caseUrl !== null) existingPending.caseUrl = caseUrl;
           if (alertData !== null) existingPending.alertData = alertData;
           if (metadata !== null) existingPending.metadata = metadata;
+          if (!existingPending.createdByName && createdByName) {
+            existingPending.createdByUserId = createdByUserId;
+            existingPending.createdByUsername = createdByUsername;
+            existingPending.createdByName = createdByName;
+          }
           existingPending.resumeMethod = resumeMethod;
           existingPending.updatedAt = now;
-          saveApprovals();
+          saveApprovals(existingPending);
           syncHistoryApprovalStatus(existingPending);
           return {
             ok: true,
@@ -1411,12 +1700,17 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           markdown,
           alertData,
           metadata,
+          createdByUserId,
+          createdByUsername,
+          createdByName,
           resumeUrl,
           resumeMethod,
           deadlineAt,
           attempt,
           decision: null,
           reason: null,
+          decidedByUserId: null,
+          decidedByUsername: null,
           decidedBy: null,
           decidedAt: null,
           resumeHttpStatus: null,
@@ -1427,7 +1721,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         };
 
         approvals.unshift(record);
-        saveApprovals();
+        saveApprovals(record);
         syncHistoryApprovalStatus(record);
         resolveOpenRejectionsFor({
           execId,
@@ -1446,7 +1740,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       });
     },
 
-    async decideApproval(id, payload = {}) {
+    async decideApproval(id, payload = {}, actorUser = null) {
       const rawDecision = String(payload.decision ?? payload.action ?? payload.approvalStatus ?? '').trim().toLowerCase();
       let decision = null;
       if (['approve', 'approved', 'yes', 'true', '✅ approve'].includes(rawDecision)) {
@@ -1459,7 +1753,11 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       }
 
       const reason = String(payload.reason ?? payload.notes ?? '').trim().slice(0, 2000) || null;
-      const decidedBy = String(payload.decidedBy ?? payload.analyst ?? '').trim().slice(0, 120) || null;
+      const decidedByUserId = actorUser?.id || null;
+      const decidedByUsername = actorUser?.username || null;
+      const decidedBy = (actorUser ? (actorUser.displayName || actorUser.username) : null)
+        || String(payload.decidedBy ?? payload.analyst ?? '').trim().slice(0, 120)
+        || null;
 
       const prep = await withLock(() => {
         refreshExpiredApprovals();
@@ -1538,13 +1836,15 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           target.status = decision === 'approve' ? 'approved' : 'denied';
           target.decision = decision;
           target.reason = reason;
+          target.decidedByUserId = decidedByUserId;
+          target.decidedByUsername = decidedByUsername;
           target.decidedBy = decidedBy;
           target.decidedAt = decidedAt;
           target.resumeHttpStatus = resp.statusCode;
           target.resumeResponse = String(resp.body || '').slice(0, 500) || null;
           target.lastError = null;
           target.updatedAt = decidedAt;
-          saveApprovals();
+          saveApprovals(target);
           syncHistoryApprovalStatus(target);
           if (decision === 'approve') {
             resolveOpenRejectionsFor({
@@ -1577,7 +1877,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           target.resumeResponse = resp?.body ? String(resp.body).slice(0, 500) : null;
           target.lastError = errMsg;
           target.updatedAt = new Date().toISOString();
-          saveApprovals();
+          saveApprovals(target);
         }
         return target || rec;
       });
@@ -1615,7 +1915,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           target.reason = payload.reason == null ? null : String(payload.reason).slice(0, 2000);
         }
         target.updatedAt = new Date().toISOString();
-        saveApprovals();
+        saveApprovals(target);
         syncHistoryApprovalStatus(target);
         return {
           ok: true,
@@ -1630,7 +1930,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         const before = approvals.length;
         approvals = approvals.filter((x) => x.id !== id);
         if (approvals.length === before) return null;
-        saveApprovals();
+        saveApprovals(null, id);
         return {
           ok: true,
           counts: approvalCounts(),
@@ -1718,14 +2018,14 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           }
         }
         target.updatedAt = nowIso;
-        saveRejections();
+        saveRejections(target);
 
         if (target.approvalId) {
           const appr = approvals.find((a) => a.id === target.approvalId);
           if (appr) {
             appr.rejectionStatus = target.status;
             appr.updatedAt = nowIso;
-            saveApprovals();
+            saveApprovals(appr);
           }
         }
 
@@ -1742,7 +2042,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         const before = rejections.length;
         rejections = rejections.filter((x) => x.id !== id);
         if (rejections.length === before) return null;
-        saveRejections();
+        saveRejections(null, id);
         return {
           ok: true,
           counts: rejectionCounts(),
@@ -1750,8 +2050,12 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
       });
     },
 
-    async completeRejection(id, payload = {}) {
-      const completedBy = String(payload.completedBy ?? payload.analyst ?? '').trim().slice(0, 120) || null;
+    async completeRejection(id, payload = {}, actorUser = null) {
+      const completedByUserId = actorUser?.id || null;
+      const completedByUsername = actorUser?.username || null;
+      const completedBy = (actorUser ? (actorUser.displayName || actorUser.username) : null)
+        || String(payload.completedBy ?? payload.analyst ?? '').trim().slice(0, 120)
+        || null;
       const skipResume = Boolean(payload.skipResume);
 
       const prep = await withLock(() => {
@@ -1841,7 +2145,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
               target.resumeResponse = resp?.body ? String(resp.body).slice(0, 500) : null;
               target.lastError = errMsg;
               target.updatedAt = new Date().toISOString();
-              saveRejections();
+              saveRejections(target);
             }
             return target || rec;
           });
@@ -1867,6 +2171,8 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         target.resolvedReason = skipResume ? 'manual_complete' : 'revision_completed';
         target.acknowledgedBy = completedBy || target.acknowledgedBy;
         target.acknowledgedAt = target.acknowledgedAt || completedAt;
+        target.completedByUserId = completedByUserId;
+        target.completedByUsername = completedByUsername;
         target.completedBy = completedBy;
         target.completedAt = completedAt;
         target.resolvedAt = completedAt;
@@ -1874,7 +2180,7 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
         target.resumeResponse = resp?.body ? String(resp.body).slice(0, 500) : null;
         target.lastError = null;
         target.updatedAt = completedAt;
-        saveRejections();
+        saveRejections(target);
 
         const ws = normalizeWorkspace(target.workspace, 'asoc');
         let apprChanged = false;
@@ -1889,13 +2195,15 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           if (appr.status === 'denied') {
             appr.status = 'revised';
             appr.revisedAt = completedAt;
+            appr.revisedByUserId = completedByUserId;
             appr.revisedBy = completedBy;
           }
           appr.rejectionStatus = 'resolved';
           appr.updatedAt = completedAt;
           apprChanged = true;
+          if (pgBackend) saveApprovals(appr);
         }
-        if (apprChanged) saveApprovals();
+        if (!pgBackend && apprChanged) saveApprovals();
 
         let histChanged = false;
         const hist = target.jobId
@@ -1905,8 +2213,9 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env) {
           hist.approvalStatus = 'revised';
           hist.updatedAt = completedAt;
           histChanged = true;
+          if (pgBackend) saveHistory(hist);
         }
-        if (histChanged) saveHistory();
+        if (!pgBackend && histChanged) saveHistory();
 
         return {
           ok: true,
@@ -1943,6 +2252,7 @@ function configScript(store, env = process.env) {
   const clientCfg = {
     defaultWorkspace: cfg.defaultWorkspace,
     publicUrl: cfg.publicUrl || undefined,
+    authEnabled: cfg.authEnabled,
     workspaces: {
       asoc: buildWsClient('asoc'),
       soc: buildWsClient('soc'),
@@ -1964,11 +2274,12 @@ function send(res, method, status, type, body, extraHeaders = {}) {
   else res.end(buf);
 }
 
-function sendJson(res, method, status, obj) {
+function sendJson(res, method, status, obj, extraHeaders = {}) {
   send(res, method, status, MIME['.json'], JSON.stringify(obj), {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-    'access-control-allow-headers': 'Content-Type, X-Diptera-Secret',
+    'access-control-allow-headers': 'Content-Type, X-Diptera-Secret, Authorization',
+    ...extraHeaders,
   });
 }
 
@@ -2001,9 +2312,28 @@ function readJsonBody(req) {
 function createServer(options = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR;
   const env = options.env || process.env;
-  const store = options.store || createStore(dataDir, env);
+  const envCfg = parseEnvConfig(env);
+  const pgBackend = options.pgBackend !== undefined
+    ? options.pgBackend
+    : (options.pool
+      ? db.createPostgresBackend({ env, pool: options.pool })
+      : (envCfg.hasPgConfig ? db.createPostgresBackend({ env }) : null));
+  const ownsPgBackend = Boolean(pgBackend && options.pgBackend === undefined && !options.pool);
+  const store = options.store || createStore(dataDir, env, { pgBackend });
+  const authStore = envCfg.authEnabled
+    ? (options.authStore || auth.createAuthStore({ pgBackend, env }))
+    : null;
 
-  return http.createServer(async (req, res) => {
+  let seedInfo = { seeded: false, username: null, usingDefaultPassword: false };
+  const ready = (async () => {
+    if (store.ready) await store.ready;
+    if (authStore) {
+      seedInfo = await authStore.ensureDefaultAdmin();
+    }
+    return { seedInfo };
+  })();
+
+  const server = http.createServer(async (req, res) => {
     const method = req.method === 'HEAD' ? 'HEAD' : req.method;
 
     let urlObj;
@@ -2020,12 +2350,157 @@ function createServer(options = {}) {
         return sendJson(res, 'GET', 200, { ok: true });
       }
       try {
+        await ready;
+        const curEnvCfg = parseEnvConfig(env);
+
+        // Public Auth Endpoints
+        if (method === 'GET' && pathname === '/api/auth/me') {
+          if (!curEnvCfg.authEnabled || !authStore) {
+            return sendJson(res, method, 200, {
+              ok: true,
+              authEnabled: false,
+              authenticated: true,
+              user: null,
+            });
+          }
+          const user = await authStore.authenticateRequest(req);
+          return sendJson(res, method, 200, {
+            ok: true,
+            authEnabled: true,
+            authenticated: Boolean(user),
+            user,
+          });
+        }
+
+        if (method === 'POST' && pathname === '/api/auth/login') {
+          if (!curEnvCfg.authEnabled || !authStore) {
+            return sendJson(res, method, 400, { ok: false, error: 'Autentikasi belum diaktifkan pada server ini' });
+          }
+          const body = await readJsonBody(req);
+          const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+          const result = await authStore.login({
+            username: body.username,
+            password: body.password,
+            userAgent: req.headers['user-agent'] || '',
+            clientIp,
+          });
+          const cookie = auth.buildSessionCookie(result.token, {
+            maxAgeSec: result.maxAgeSec,
+            secure: curEnvCfg.cookieSecure,
+          });
+          return sendJson(res, method, 200, { ok: true, user: result.user }, { 'Set-Cookie': cookie });
+        }
+
+        if (method === 'POST' && pathname === '/api/auth/logout') {
+          if (authStore) {
+            const token = auth.extractSessionToken(req);
+            if (token) await authStore.logout(token);
+          }
+          const clearCookie = auth.buildClearSessionCookie({ secure: curEnvCfg.cookieSecure });
+          return sendJson(res, method, 200, { ok: true }, { 'Set-Cookie': clearCookie });
+        }
+
+        // Machine-to-Machine n8n Endpoints (tidak memerlukan cookie browser)
+        if (method === 'POST' && pathname === '/api/n8n-callback') {
+          const body = await readJsonBody(req);
+          const result = await store.handleN8nCallback(body);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/approvals') {
+          if (!checkApprovalSecret(req, curEnvCfg.approvalSecret, curEnvCfg.approvalSecretHash)) {
+            return sendJson(res, method, 401, { error: 'Unauthorized: invalid X-Diptera-Secret' });
+          }
+          const body = await readJsonBody(req);
+          const result = await store.createApproval(body);
+          return sendJson(res, method, result.deduplicated ? 200 : 201, result);
+        }
+        if (method === 'POST' && pathname === '/api/rejections') {
+          if (!checkApprovalSecret(req, curEnvCfg.approvalSecret, curEnvCfg.approvalSecretHash)) {
+            return sendJson(res, method, 401, { error: 'Unauthorized: invalid X-Diptera-Secret' });
+          }
+          const body = await readJsonBody(req);
+          const result = await store.createRejection(body);
+          return sendJson(res, method, 201, result);
+        }
+
+        // Auth Guard untuk seluruh endpoint web / operator
+        let reqUser = null;
+        if (curEnvCfg.authEnabled && authStore) {
+          reqUser = await authStore.authenticateRequest(req);
+          if (!reqUser) {
+            return sendJson(res, method, 401, {
+              ok: false,
+              error: 'Silakan login terlebih dahulu',
+              code: 'AUTH_REQUIRED',
+            });
+          }
+        }
+
+        if (method === 'POST' && pathname === '/api/auth/password') {
+          if (!curEnvCfg.authEnabled || !authStore || !reqUser) {
+            return sendJson(res, method, 400, { error: 'Autentikasi tidak aktif' });
+          }
+          const body = await readJsonBody(req);
+          const currentToken = auth.extractSessionToken(req);
+          const result = await authStore.changeOwnPassword(reqUser.id, {
+            currentPassword: body.currentPassword,
+            newPassword: body.newPassword,
+            currentToken,
+          });
+          return sendJson(res, method, 200, result);
+        }
+
+        // User Management (Admin Only)
+        if (pathname === '/api/users' || pathname.startsWith('/api/users/')) {
+          if (!curEnvCfg.authEnabled || !authStore || !reqUser) {
+            return sendJson(res, method, 400, { error: 'Manajemen user membutuhkan autentikasi aktif' });
+          }
+          if (reqUser.role !== 'admin') {
+            return sendJson(res, method, 403, { error: 'Akses ditolak: hanya admin yang dapat mengelola user' });
+          }
+          if (pathname === '/api/users') {
+            if (method === 'GET') {
+              const users = await authStore.listUsers();
+              return sendJson(res, method, 200, { ok: true, users });
+            }
+            if (method === 'POST') {
+              const body = await readJsonBody(req);
+              const user = await authStore.createUser({
+                username: body.username,
+                displayName: body.displayName,
+                password: body.password,
+                role: body.role,
+              });
+              return sendJson(res, method, 201, { ok: true, user });
+            }
+          } else {
+            const targetId = pathname.slice('/api/users/'.length);
+            if (!targetId || targetId.includes('/')) {
+              return sendJson(res, method, 400, { error: 'ID user tidak valid' });
+            }
+            if (method === 'PATCH') {
+              const body = await readJsonBody(req);
+              const currentToken = auth.extractSessionToken(req);
+              const user = await authStore.updateUser(targetId, body, reqUser, currentToken);
+              return sendJson(res, method, 200, { ok: true, user });
+            }
+            if (method === 'DELETE') {
+              const result = await authStore.deleteUser(targetId, reqUser);
+              return sendJson(res, method, 200, result);
+            }
+          }
+          return sendJson(res, method, 405, { error: 'Method tidak diizinkan' });
+        }
+
         if (method === 'GET' && pathname === '/api/state') {
           return sendJson(res, method, 200, store.getState());
         }
         if (method === 'POST' && pathname === '/api/counters/sync') {
           const body = await readJsonBody(req);
-          const result = await store.syncCounters(body);
+          const result = await store.syncCounters({
+            ...body,
+            updatedBy: reqUser ? reqUser.username : body.updatedBy,
+          });
           return sendJson(res, method, 200, { ok: true, ...result });
         }
         if (method === 'POST' && pathname === '/api/counters/reserve') {
@@ -2046,7 +2521,7 @@ function createServer(options = {}) {
         }
         if (method === 'POST' && pathname === '/api/history') {
           const body = await readJsonBody(req);
-          const record = await store.createHistory(body);
+          const record = await store.createHistory(body, reqUser);
           const ws = normalizeWorkspace(record.workspace, 'asoc');
           return sendJson(res, method, 201, {
             ok: true,
@@ -2079,11 +2554,6 @@ function createServer(options = {}) {
             return sendJson(res, method, 200, { ok: true });
           }
         }
-        if (method === 'POST' && pathname === '/api/n8n-callback') {
-          const body = await readJsonBody(req);
-          const result = await store.handleN8nCallback(body);
-          return sendJson(res, method, 200, result);
-        }
         if (method === 'GET' && pathname === '/api/approvals') {
           const data = store.listApprovals({
             workspace: urlObj.searchParams.get('workspace') || 'all',
@@ -2095,21 +2565,12 @@ function createServer(options = {}) {
           });
           return sendJson(res, method, 200, data);
         }
-        if (method === 'POST' && pathname === '/api/approvals') {
-          const reqEnvCfg = parseEnvConfig(env);
-          if (!checkApprovalSecret(req, reqEnvCfg.approvalSecret)) {
-            return sendJson(res, method, 401, { error: 'Unauthorized: invalid X-Diptera-Secret' });
-          }
-          const body = await readJsonBody(req);
-          const result = await store.createApproval(body);
-          return sendJson(res, method, result.deduplicated ? 200 : 201, result);
-        }
         if (pathname.startsWith('/api/approvals/')) {
           const rest = pathname.slice('/api/approvals/'.length);
           const parts = rest.split('/').filter(Boolean);
           if (parts.length === 2 && parts[1] === 'decide' && method === 'POST') {
             const body = await readJsonBody(req);
-            const result = await store.decideApproval(parts[0], body);
+            const result = await store.decideApproval(parts[0], body, reqUser);
             return sendJson(res, method, 200, result);
           }
           if (parts.length === 1) {
@@ -2142,21 +2603,12 @@ function createServer(options = {}) {
           });
           return sendJson(res, method, 200, data);
         }
-        if (method === 'POST' && pathname === '/api/rejections') {
-          const reqEnvCfg = parseEnvConfig(env);
-          if (!checkApprovalSecret(req, reqEnvCfg.approvalSecret)) {
-            return sendJson(res, method, 401, { error: 'Unauthorized: invalid X-Diptera-Secret' });
-          }
-          const body = await readJsonBody(req);
-          const result = await store.createRejection(body);
-          return sendJson(res, method, 201, result);
-        }
         if (pathname.startsWith('/api/rejections/')) {
           const rest = pathname.slice('/api/rejections/'.length);
           const parts = rest.split('/').filter(Boolean);
           if (parts.length === 2 && parts[1] === 'complete' && method === 'POST') {
             const body = await readJsonBody(req);
-            const result = await store.completeRejection(parts[0], body);
+            const result = await store.completeRejection(parts[0], body, reqUser);
             return sendJson(res, method, 200, result);
           }
           if (parts.length === 1) {
@@ -2196,6 +2648,7 @@ function createServer(options = {}) {
     }
 
     if (pathname === '/config.js') {
+      await ready.catch(() => {});
       return send(res, method, 200, MIME['.js'], configScript(store, env));
     }
 
@@ -2218,12 +2671,24 @@ function createServer(options = {}) {
       send(res, method, 200, MIME[path.extname(full).toLowerCase()] || 'application/octet-stream', buf);
     });
   });
+
+  server.ready = ready;
+  server.store = store;
+  server.authStore = authStore;
+  server.on('close', () => {
+    if (ownsPgBackend && pgBackend) {
+      pgBackend.close().catch(() => {});
+    }
+  });
+
+  return server;
 }
 
-function printBanner(port, host) {
+function printBanner(port, host, info = {}) {
   const local = 'http://localhost:' + port;
   const container = inContainer();
   const lans = container ? [] : lanUrls(port);
+  const envCfg = parseEnvConfig(process.env);
   console.log('');
   console.log('  Diptera Unified (ASOC + SOC)');
   console.log('  ' + '-'.repeat(48));
@@ -2233,14 +2698,25 @@ function printBanner(port, host) {
   } else if (lans.length) {
     for (const url of lans) console.log('  Jaringan  : ' + url);
   }
-  console.log('  Data dir  : ' + DEFAULT_DATA_DIR);
+  console.log('  Storage   : ' + (envCfg.hasPgConfig ? 'PostgreSQL' : ('JSON lokal (' + DEFAULT_DATA_DIR + ')')));
+  console.log('  Auth      : ' + (envCfg.authEnabled ? 'Aktif (Login Wajib)' : 'Nonaktif (Mode Terbuka)'));
+  if (info.seedInfo?.seeded) {
+    console.log('  Admin awal: ' + info.seedInfo.username + (info.seedInfo.usingDefaultPassword ? ' (password default: admin123 — segera ganti!)' : ''));
+  }
   console.log('  ' + '-'.repeat(48));
   console.log('');
 }
 
 if (require.main === module) {
   const server = createServer();
-  server.listen(PORT, HOST, () => printBanner(PORT, HOST));
+  server.ready
+    .then((info) => {
+      server.listen(PORT, HOST, () => printBanner(PORT, HOST, info));
+    })
+    .catch((err) => {
+      console.error('\n  Gagal inisialisasi Diptera:', err.message, '\n');
+      process.exit(1);
+    });
   server.on('error', (err) => {
     console.error('\n  Gagal menjalankan Diptera:', err.message, '\n');
     process.exit(1);

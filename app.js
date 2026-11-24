@@ -363,6 +363,12 @@
     openRejections: [],
     rejectionCounts: { open: 0, acknowledged: 0, resolved: 0, total: 0 },
     knownOpenRejectionIds: null,
+    lastRejectionBannerSig: null,
+    authEnabled: Boolean(CONFIG.authEnabled),
+    currentUser: null,
+    appStarted: false,
+    users: [],
+    resetPwTargetUser: null,
   };
 
   let persistTimer = null;
@@ -512,13 +518,381 @@
 
   async function apiFetch(path, opts = {}) {
     const res = await fetch(path, {
+      credentials: 'same-origin',
       ...opts,
       headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
     });
     const text = await res.text();
     const json = safeJson(text);
+    if (res.status === 401 && json?.code === 'AUTH_REQUIRED') {
+      handleUnauthorized();
+    }
     if (!res.ok) throw new Error(json?.error || ('HTTP ' + res.status));
     return json;
+  }
+
+  function stopPollingTimers() {
+    if (sharedPollTimer) {
+      clearInterval(sharedPollTimer);
+      sharedPollTimer = null;
+    }
+    if (approvalPollTimer) {
+      clearInterval(approvalPollTimer);
+      approvalPollTimer = null;
+    }
+  }
+
+  function handleUnauthorized() {
+    if (!state.authEnabled) return;
+    const hadUser = Boolean(state.currentUser);
+    state.currentUser = null;
+    stopPollingTimers();
+    setAuthUiState(null, true);
+    if (hadUser) {
+      toast({ type: 'info', title: 'Sesi berakhir', body: 'Silakan login kembali untuk melanjutkan.' });
+    }
+  }
+
+  function setAuthUiState(user, authEnabled = state.authEnabled) {
+    state.authEnabled = Boolean(authEnabled);
+    state.currentUser = user || null;
+
+    const topbar = $('.topbar');
+    const mainEl = $('main');
+    const authScreen = $('#auth-screen');
+    const userBar = $('#user-bar');
+    const openFromSettingsBtn = $('#btn-open-user-modal-from-settings');
+    const umTabUsers = $('#um-tab-users');
+    const analystInput = $('#appr-analyst-name');
+    const reviewerPill = $('#appr-reviewer-pill');
+
+    const lockedOut = state.authEnabled && !state.currentUser;
+    if (authScreen) authScreen.hidden = !lockedOut;
+    if (topbar) topbar.hidden = lockedOut;
+    if (mainEl) mainEl.hidden = lockedOut;
+
+    if (lockedOut) {
+      if ($('#user-modal')) $('#user-modal').hidden = true;
+      if ($('#settings-panel')) $('#settings-panel').hidden = true;
+      const uInp = $('#login-username');
+      if (uInp) setTimeout(() => uInp.focus(), 30);
+      return;
+    }
+
+    if (state.currentUser) {
+      const u = state.currentUser;
+      const display = u.displayName || u.username;
+      const initials = display.slice(0, 2).toUpperCase();
+      if (userBar) userBar.hidden = false;
+      if ($('#user-avatar')) $('#user-avatar').textContent = initials;
+      if ($('#user-display-name')) $('#user-display-name').textContent = display;
+      const badge = $('#user-role-badge');
+      if (badge) {
+        badge.textContent = u.role === 'admin' ? 'ADMIN' : 'ANALYST';
+        badge.className = 'role-badge ' + (u.role === 'admin' ? 'role-admin' : 'role-analyst');
+      }
+      if (openFromSettingsBtn) openFromSettingsBtn.hidden = false;
+      if (umTabUsers) umTabUsers.hidden = u.role !== 'admin';
+      state.analystName = display;
+      if (analystInput) analystInput.hidden = true;
+      if (reviewerPill) {
+        reviewerPill.hidden = false;
+        reviewerPill.innerHTML = `<span>${esc(display)}</span> <span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role.toUpperCase())}</span>`;
+      }
+    } else {
+      if (userBar) userBar.hidden = true;
+      if (openFromSettingsBtn) openFromSettingsBtn.hidden = true;
+      if (umTabUsers) umTabUsers.hidden = true;
+      if (analystInput) analystInput.hidden = false;
+      if (reviewerPill) reviewerPill.hidden = true;
+    }
+  }
+
+  function showInlineMsg(el, type, msg) {
+    if (!el) return;
+    if (!msg) {
+      el.hidden = true;
+      el.textContent = '';
+      el.className = 'um-msg';
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+    el.className = 'um-msg ' + (type === 'ok' ? 'ok' : 'err');
+  }
+
+  async function handleLoginSubmit(e) {
+    e.preventDefault();
+    const errEl = $('#login-error');
+    const submitBtn = $('#btn-login-submit');
+    const username = ($('#login-username')?.value || '').trim();
+    const password = $('#login-password')?.value || '';
+
+    if (!username || !password) {
+      if (errEl) {
+        errEl.textContent = 'Username dan password wajib diisi.';
+        errEl.hidden = false;
+      }
+      return;
+    }
+
+    if (errEl) errEl.hidden = true;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Memproses…';
+    }
+    try {
+      const res = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      });
+      if ($('#login-password')) $('#login-password').value = '';
+      setAuthUiState(res.user, true);
+      await startAppSession();
+      toast({ type: 'success', title: 'Login berhasil', body: `Selamat datang, ${res.user.displayName || res.user.username}.` });
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err.message || 'Gagal login';
+        errEl.hidden = false;
+      }
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Masuk';
+      }
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST', body: '{}' });
+    } catch {}
+    stopPollingTimers();
+    state.users = [];
+    state.knownPendingApprovalIds = null;
+    state.knownOpenRejectionIds = null;
+    setAuthUiState(null, state.authEnabled);
+    toast({ type: 'info', title: 'Berhasil keluar' });
+  }
+
+  function switchUserModalTab(tab) {
+    const isUsers = tab === 'users' && state.currentUser?.role === 'admin';
+    $('#um-tab-account')?.classList.toggle('active', !isUsers);
+    $('#um-tab-account')?.setAttribute('aria-selected', String(!isUsers));
+    $('#um-tab-users')?.classList.toggle('active', isUsers);
+    $('#um-tab-users')?.setAttribute('aria-selected', String(isUsers));
+    if ($('#um-panel-account')) $('#um-panel-account').hidden = isUsers;
+    if ($('#um-panel-users')) $('#um-panel-users').hidden = !isUsers;
+    if (isUsers) fetchUsers();
+  }
+
+  function openUserModal(defaultTab = 'account') {
+    if (!state.currentUser) return;
+    const u = state.currentUser;
+    if ($('#um-profile-name')) $('#um-profile-name').textContent = u.displayName || u.username;
+    if ($('#um-profile-username')) $('#um-profile-username').textContent = '@' + u.username;
+    const roleBadge = $('#um-profile-role');
+    if (roleBadge) {
+      roleBadge.textContent = u.role.toUpperCase();
+      roleBadge.className = 'role-badge ' + (u.role === 'admin' ? 'role-admin' : 'role-analyst');
+    }
+    showInlineMsg($('#pw-msg'), '', '');
+    showInlineMsg($('#create-user-msg'), '', '');
+    if ($('#form-change-pw')) $('#form-change-pw').reset();
+    if ($('#admin-reset-pw-box')) $('#admin-reset-pw-box').hidden = true;
+    state.resetPwTargetUser = null;
+    if ($('#user-modal')) $('#user-modal').hidden = false;
+    switchUserModalTab(defaultTab);
+  }
+
+  function closeUserModal() {
+    if ($('#user-modal')) $('#user-modal').hidden = true;
+    state.resetPwTargetUser = null;
+  }
+
+  async function handleChangeOwnPassword(e) {
+    e.preventDefault();
+    const msgEl = $('#pw-msg');
+    const currentPassword = $('#pw-current')?.value || '';
+    const newPassword = $('#pw-new')?.value || '';
+    const confirmPassword = $('#pw-confirm')?.value || '';
+
+    if (newPassword.length < 6) {
+      showInlineMsg(msgEl, 'err', 'Password baru minimal 6 karakter.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      showInlineMsg(msgEl, 'err', 'Konfirmasi password baru tidak cocok.');
+      return;
+    }
+
+    const btn = $('#btn-save-pw');
+    if (btn) btn.disabled = true;
+    try {
+      await apiFetch('/api/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      if ($('#form-change-pw')) $('#form-change-pw').reset();
+      showInlineMsg(msgEl, 'ok', 'Password berhasil diperbarui.');
+      toast({ type: 'success', title: 'Password diperbarui' });
+    } catch (err) {
+      showInlineMsg(msgEl, 'err', err.message || 'Gagal mengganti password');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function fetchUsers() {
+    if (state.currentUser?.role !== 'admin') return;
+    const tbody = $('#users-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="hist-loading-cell">Memuat daftar user…</td></tr>';
+    try {
+      const res = await apiFetch('/api/users');
+      state.users = Array.isArray(res?.users) ? res.users : [];
+      renderUsersTable();
+    } catch (err) {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="hist-loading-cell">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  function renderUsersTable() {
+    const tbody = $('#users-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    if (!state.users.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="hist-loading-cell">Belum ada user.</td></tr>';
+      return;
+    }
+    const selfId = state.currentUser?.id;
+    for (const u of state.users) {
+      const isSelf = u.id === selfId;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <div><strong>${esc(u.displayName || u.username)}</strong>${isSelf ? ' <span class="chip">Anda</span>' : ''}</div>
+          <div class="mono field-hint">@${esc(u.username)}</div>
+        </td>
+        <td><span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role.toUpperCase())}</span></td>
+        <td><span class="chip ${u.isActive ? 'appr-approved' : 'appr-denied'}">${u.isActive ? 'Aktif' : 'Nonaktif'}</span></td>
+        <td class="mono">${esc(fmtWib(u.createdAt))}</td>
+        <td>
+          <div class="hist-actions">
+            <button type="button" class="btn ghost btn-xs act-user-reset-pw">Ganti Password</button>
+            <button type="button" class="btn ghost btn-xs act-user-role">${u.role === 'admin' ? 'Jadikan Analyst' : 'Jadikan Admin'}</button>
+            ${!isSelf ? '<button type="button" class="btn danger btn-xs act-user-del">Hapus</button>' : ''}
+          </div>
+        </td>
+      `;
+
+      $('.act-user-reset-pw', tr)?.addEventListener('click', () => openAdminResetPw(u));
+      $('.act-user-role', tr)?.addEventListener('click', () => handleToggleUserRole(u));
+      const delBtn = $('.act-user-del', tr);
+      if (delBtn) {
+        delBtn.addEventListener('click', () => {
+          if (delBtn.dataset.confirm !== '1') {
+            delBtn.dataset.confirm = '1';
+            delBtn.textContent = 'Yakin Hapus?';
+            setTimeout(() => {
+              delete delBtn.dataset.confirm;
+              delBtn.textContent = 'Hapus';
+            }, 3500);
+            return;
+          }
+          handleDeleteUser(u);
+        });
+      }
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function handleCreateUser(e) {
+    e.preventDefault();
+    const msgEl = $('#create-user-msg');
+    const username = ($('#new-user-username')?.value || '').trim();
+    const displayName = ($('#new-user-displayname')?.value || '').trim();
+    const role = $('#new-user-role')?.value || 'analyst';
+    const password = $('#new-user-password')?.value || '';
+
+    const btn = $('#btn-create-user');
+    if (btn) btn.disabled = true;
+    try {
+      await apiFetch('/api/users', {
+        method: 'POST',
+        body: JSON.stringify({ username, displayName, role, password }),
+      });
+      if ($('#form-create-user')) $('#form-create-user').reset();
+      showInlineMsg(msgEl, 'ok', `User "${username}" berhasil dibuat.`);
+      toast({ type: 'success', title: 'User ditambahkan', body: `${displayName || username} (@${username})` });
+      await fetchUsers();
+    } catch (err) {
+      showInlineMsg(msgEl, 'err', err.message || 'Gagal membuat user');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function handleToggleUserRole(u) {
+    const nextRole = u.role === 'admin' ? 'analyst' : 'admin';
+    try {
+      const res = await apiFetch('/api/users/' + encodeURIComponent(u.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ role: nextRole }),
+      });
+      if (u.id === state.currentUser?.id && res?.user) {
+        setAuthUiState(res.user, true);
+      }
+      toast({ type: 'info', title: 'Role diperbarui', body: `@${u.username} sekarang ${nextRole.toUpperCase()}` });
+      await fetchUsers();
+    } catch (err) {
+      toast({ type: 'error', title: 'Gagal mengubah role', body: err.message });
+    }
+  }
+
+  function openAdminResetPw(u) {
+    state.resetPwTargetUser = u;
+    const box = $('#admin-reset-pw-box');
+    const lbl = $('#reset-pw-target-label');
+    const inp = $('#reset-pw-input');
+    if (lbl) lbl.textContent = `Ganti password untuk ${u.displayName || u.username} (@${u.username})`;
+    if (inp) inp.value = '';
+    if (box) box.hidden = false;
+    if (inp) inp.focus();
+  }
+
+  async function handleAdminResetPwSubmit() {
+    const u = state.resetPwTargetUser;
+    if (!u) return;
+    const newPassword = $('#reset-pw-input')?.value || '';
+    if (newPassword.length < 6) {
+      toast({ type: 'error', title: 'Password terlalu pendek', body: 'Minimal 6 karakter.' });
+      return;
+    }
+    const btn = $('#btn-reset-pw-confirm');
+    if (btn) btn.disabled = true;
+    try {
+      await apiFetch('/api/users/' + encodeURIComponent(u.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ password: newPassword }),
+      });
+      if ($('#admin-reset-pw-box')) $('#admin-reset-pw-box').hidden = true;
+      state.resetPwTargetUser = null;
+      toast({ type: 'success', title: 'Password di-reset', body: `Password @${u.username} berhasil diperbarui.` });
+    } catch (err) {
+      toast({ type: 'error', title: 'Gagal mengganti password', body: err.message });
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function handleDeleteUser(u) {
+    try {
+      await apiFetch('/api/users/' + encodeURIComponent(u.id), { method: 'DELETE' });
+      toast({ type: 'info', title: 'User dihapus', body: `@${u.username} telah dihapus.` });
+      await fetchUsers();
+    } catch (err) {
+      toast({ type: 'error', title: 'Gagal menghapus user', body: err.message });
+    }
   }
 
   async function fetchSharedState(silent = false) {
@@ -677,7 +1051,7 @@
     if (tbody && wrap) {
       wrap.hidden = false;
       if (emptyEl) emptyEl.hidden = true;
-      tbody.innerHTML = `<tr><td colspan="8" class="hist-loading-cell">Memuat riwayat ${esc(WORKSPACE_META[ws].code)}…</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9" class="hist-loading-cell">Memuat riwayat ${esc(WORKSPACE_META[ws].code)}…</td></tr>`;
     }
 
     try {
@@ -1817,6 +2191,8 @@
           jobId: card.historyId,
           workspace: 'asoc',
           callbackUrl: effectiveCallbackUrl('asoc'),
+          createdBy: state.currentUser ? (state.currentUser.displayName || state.currentUser.username) : null,
+          createdByUserId: state.currentUser?.id || null,
         }));
       }
 
@@ -2156,6 +2532,15 @@
         ? ` <span class="chip appr-${esc(item.approvalStatus)}">${esc(apprLabels[item.approvalStatus] || item.approvalStatus)}</span>`
         : '';
 
+      const creatorName = item.createdByName || item.createdByUsername || '';
+      const reviewerName = item.reviewedByName || item.reviewedByUsername || '';
+      const actorsHtml = (creatorName || reviewerName)
+        ? `<div class="hist-actors">
+            ${creatorName ? `<div class="actor-line" title="Dibuat oleh ${esc(creatorName)}"><span class="actor-tag">Buat</span><span class="actor-name">${esc(creatorName)}</span></div>` : ''}
+            ${reviewerName ? `<div class="actor-line" title="Direview oleh ${esc(reviewerName)}${item.reviewedAt ? ' · ' + fmtWib(item.reviewedAt) : ''}"><span class="actor-tag">Review</span><span class="actor-name">${esc(reviewerName)}</span></div>` : ''}
+          </div>`
+        : '<span class="field-hint">—</span>';
+
       tr.innerHTML = `
         <td class="mono">${esc(fmtWib(item.createdAt))}</td>
         <td><span class="chip mode-${esc(item.mode)}">${itemWs === 'soc' ? 'SOC' : (item.mode === 'repeating' ? 'Repeating' : 'Reporting')}</span></td>
@@ -2170,6 +2555,7 @@
           </span>
         </td>
         <td><span class="chip status-${esc(item.status)}">${esc(STATUS_LABEL[item.status] || item.status)}</span>${apprBadge}</td>
+        <td>${actorsHtml}</td>
         <td>
           <div class="hist-actions">
             ${item.markdown ? `<button class="btn ghost btn-xs act-toggle-md" type="button">${state.expandedHistoryId === item.id ? 'Tutup MD' : 'Lihat MD'}</button>` : ''}
@@ -2202,7 +2588,7 @@
       if (state.expandedHistoryId === item.id && item.markdown) {
         const mdTr = document.createElement('tr');
         mdTr.className = 'hist-md-row';
-        mdTr.innerHTML = `<td colspan="8"><pre class="md-pre">${esc(item.markdown)}</pre></td>`;
+        mdTr.innerHTML = `<td colspan="9"><pre class="md-pre">${esc(item.markdown)}</pre></td>`;
         tbody.appendChild(mdTr);
       }
     }
@@ -2293,6 +2679,26 @@
     } catch {}
   }
 
+  function updateApprovalCountdownsInPlace(items) {
+    for (const item of items) {
+      const cardEl = findApprovalCardEl(item.id);
+      if (!cardEl) continue;
+      const dlEl = $('.approval-deadline', cardEl);
+      if (dlEl && item.deadlineAt) {
+        const rem = fmtRemaining(item.deadlineAt);
+        if (rem) {
+          dlEl.textContent = rem.text;
+          dlEl.className = 'approval-deadline' + (rem.cls ? ' ' + rem.cls : '');
+        }
+      }
+      const retryEl = $('.rejection-retry-pill', cardEl);
+      if (retryEl && item.nextRetryAt) {
+        const retryLabel = fmtRetryCountdown(item.nextRetryAt);
+        if (retryLabel) retryEl.textContent = retryLabel;
+      }
+    }
+  }
+
   async function fetchApprovals(silent = false, opts = {}) {
     const status = state.approvalStatusFilter || 'pending';
     const ws = state.approvalWorkspaceFilter || 'all';
@@ -2315,7 +2721,9 @@
     const activeCardId = typingTextarea ? typingTextarea.closest('.approval-card')?.dataset?.apprId : null;
     const selStart = typingTextarea ? typingTextarea.selectionStart : null;
     const selEnd = typingTextarea ? typingTextarea.selectionEnd : null;
-    const prevSig = state.approvals.map((x) => `${x.id}:${x.status}:${x.updatedAt}:${x.lastError || ''}`).join('|');
+    const apprSig = (list) =>
+      list.map((x) => `${x.id}:${x.status}:${x.updatedAt}:${x.lastError || ''}:${x.rejectionStatus || ''}:${x.decidedBy || ''}:${x.createdByName || ''}`).join('|');
+    const prevSig = apprSig(state.approvals);
 
     if (!silent && listEl) {
       if (emptyEl) emptyEl.hidden = true;
@@ -2326,7 +2734,10 @@
     try {
       const data = await apiFetch('/api/approvals?' + params.toString());
       const nextItems = Array.isArray(data?.items) ? data.items : [];
-      const nextSig = nextItems.map((x) => `${x.id}:${x.status}:${x.updatedAt}:${x.lastError || ''}`).join('|');
+      const nextSig = apprSig(nextItems);
+      const domAlreadyRendered = nextItems.length === 0
+        ? Boolean(emptyEl && !emptyEl.hidden)
+        : Boolean(listEl && !listEl.hidden && listEl.querySelectorAll('.approval-card').length === nextItems.length && !listEl.querySelector('.hist-loading-cell'));
 
       state.approvals = nextItems;
       if (data?.counts) {
@@ -2345,27 +2756,17 @@
         }
       }
 
-      if (silent && typingTextarea && prevSig === nextSig) {
-        for (const item of nextItems) {
-          const cardEl = findApprovalCardEl(item.id);
-          const dlEl = cardEl ? $('.approval-deadline', cardEl) : null;
-          if (dlEl && item.deadlineAt) {
-            const rem = fmtRemaining(item.deadlineAt);
-            if (rem) {
-              dlEl.textContent = rem.text;
-              dlEl.className = 'approval-deadline' + (rem.cls ? ' ' + rem.cls : '');
-            }
-          }
-        }
+      if (silent && prevSig === nextSig && domAlreadyRendered) {
+        updateApprovalCountdownsInPlace(nextItems);
         return;
       }
 
-      renderApprovalsList();
+      renderApprovalsList({ preserveScroll: silent });
       if (activeCardId) {
         const cardEl = findApprovalCardEl(activeCardId);
         const nextTa = cardEl ? $('.appr-reason-input', cardEl) : null;
         if (nextTa) {
-          nextTa.focus();
+          nextTa.focus({ preventScroll: true });
           if (selStart != null && selEnd != null) {
             try { nextTa.setSelectionRange(selStart, selEnd); } catch {}
           }
@@ -2378,13 +2779,28 @@
     }
   }
 
-  function renderApprovalsList() {
+  function renderApprovalsList(opts = {}) {
     const listEl = $('#approvals-list');
     const emptyEl = $('#approvals-empty');
     if (!listEl || !emptyEl) return;
 
+    const preserveScroll = opts.preserveScroll !== false;
+    const savedWinX = typeof window.scrollX === 'number' ? window.scrollX : 0;
+    const savedWinY = typeof window.scrollY === 'number' ? window.scrollY : 0;
+    const preScrollMap = new Map();
+    listEl.querySelectorAll('.approval-card').forEach((card) => {
+      const id = card.dataset.apprId;
+      if (!id) return;
+      card.querySelectorAll('.md-pre[data-pre-kind]').forEach((pre) => {
+        preScrollMap.set(`${id}:${pre.dataset.preKind}`, {
+          scrollTop: pre.scrollTop,
+          scrollLeft: pre.scrollLeft,
+        });
+      });
+    });
+
     if (!state.approvals.length) {
-      listEl.innerHTML = '';
+      listEl.replaceChildren();
       listEl.hidden = true;
       emptyEl.hidden = false;
       const hasFilters = Boolean(($('#appr-search')?.value || '').trim() || state.approvalWorkspaceFilter !== 'all' || state.approvalSeverityFilter);
@@ -2406,7 +2822,7 @@
 
     emptyEl.hidden = true;
     listEl.hidden = false;
-    listEl.innerHTML = '';
+    const frag = document.createDocumentFragment();
 
     for (const item of state.approvals) {
       const cardEl = document.createElement('article');
@@ -2432,6 +2848,7 @@
         : (item.reason || '');
 
       const kvParts = [];
+      if (item.createdByName || item.createdByUsername) kvParts.push(`<span class="approval-kv-item"><strong>Dibuat oleh:</strong> ${esc(item.createdByName || item.createdByUsername)}</span>`);
       if (item.workflowName) kvParts.push(`<span class="approval-kv-item"><strong>Workflow:</strong> ${esc(item.workflowName)}</span>`);
       if (item.tenant) kvParts.push(`<span class="approval-kv-item"><strong>Tenant:</strong> ${esc(item.tenant)}</span>`);
       if (item.clientName) kvParts.push(`<span class="approval-kv-item"><strong>Client:</strong> ${esc(item.clientName)}</span>`);
@@ -2497,8 +2914,8 @@
               ${item.markdown ? '<button class="btn ghost btn-xs act-appr-copy-md" type="button">Salin Markdown</button>' : ''}
               ${hasData ? `<button class="btn ghost btn-xs act-appr-toggle-data" type="button">${dataOpen ? 'Tutup Data Alert' : 'Lihat Data Alert'}</button>` : ''}
             </div>
-            ${mdOpen && item.markdown ? `<pre class="md-pre">${esc(item.markdown)}</pre>` : ''}
-            ${dataOpen && hasData ? `<pre class="md-pre">${esc(formattedData)}</pre>` : ''}
+            ${mdOpen && item.markdown ? `<pre class="md-pre" data-pre-kind="md">${esc(item.markdown)}</pre>` : ''}
+            ${dataOpen && hasData ? `<pre class="md-pre" data-pre-kind="data">${esc(formattedData)}</pre>` : ''}
           </div>
         ` : ''}
 
@@ -2553,7 +2970,7 @@
         toggleMdBtn.addEventListener('click', () => {
           if (state.expandedApprovalMdIds.has(item.id)) state.expandedApprovalMdIds.delete(item.id);
           else state.expandedApprovalMdIds.add(item.id);
-          renderApprovalsList();
+          renderApprovalsList({ preserveScroll: true });
         });
       }
 
@@ -2565,7 +2982,7 @@
         toggleDataBtn.addEventListener('click', () => {
           if (state.expandedApprovalDataIds.has(item.id)) state.expandedApprovalDataIds.delete(item.id);
           else state.expandedApprovalDataIds.add(item.id);
-          renderApprovalsList();
+          renderApprovalsList({ preserveScroll: true });
         });
       }
 
@@ -2607,7 +3024,26 @@
         }));
       }
 
-      listEl.appendChild(cardEl);
+      frag.appendChild(cardEl);
+    }
+
+    listEl.replaceChildren(frag);
+
+    if (preScrollMap.size) {
+      listEl.querySelectorAll('.approval-card').forEach((card) => {
+        const id = card.dataset.apprId;
+        if (!id) return;
+        card.querySelectorAll('.md-pre[data-pre-kind]').forEach((pre) => {
+          const saved = preScrollMap.get(`${id}:${pre.dataset.preKind}`);
+          if (saved) {
+            pre.scrollTop = saved.scrollTop;
+            pre.scrollLeft = saved.scrollLeft;
+          }
+        });
+      });
+    }
+    if (preserveScroll && typeof window.scrollTo === 'function') {
+      window.scrollTo(savedWinX, savedWinY);
     }
   }
 
@@ -2649,15 +3085,35 @@
     if (!banner || !listEl || !countEl) return;
 
     const items = state.openRejections || [];
+    const nextSig = items
+      .map((x) => `${x.id}:${x.status || 'open'}:${x.updatedAt || ''}:${x.lastError || ''}:${x.createdByName || ''}:${x.decidedBy || ''}`)
+      .join('|');
+
     if (!items.length) {
+      if (state.lastRejectionBannerSig === '' && banner.hidden) return;
+      state.lastRejectionBannerSig = '';
       banner.hidden = true;
-      listEl.innerHTML = '';
+      listEl.replaceChildren();
       return;
     }
 
     banner.hidden = false;
     countEl.textContent = String(state.rejectionCounts?.open || items.length);
-    listEl.innerHTML = '';
+
+    if (state.lastRejectionBannerSig === nextSig && listEl.children.length === items.length) {
+      for (const item of items) {
+        const row = listEl.querySelector(`.rejection-item[data-rej-id="${(typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(item.id) : item.id}"]`);
+        const retryEl = row ? $('.rejection-retry-pill', row) : null;
+        if (retryEl && item.nextRetryAt) {
+          const retryText = fmtRetryCountdown(item.nextRetryAt);
+          if (retryText) retryEl.textContent = retryText;
+        }
+      }
+      return;
+    }
+
+    state.lastRejectionBannerSig = nextSig;
+    const frag = document.createDocumentFragment();
 
     for (const item of items) {
       const itemWs = item.workspace === 'soc' ? 'soc' : 'asoc';
@@ -2677,6 +3133,7 @@
               ? `<a class="iris-link" href="${esc(caseHref)}" target="_blank" rel="noopener">${esc(formatCaseIdBadge(item.irisCaseId))} ↗</a>`
               : `<span class="mono">${esc(formatCaseIdBadge(item.irisCaseId))}</span>`) : ''}
             ${item.clientName || item.tenant ? `<span>${esc(item.clientName || item.tenant)}</span>` : ''}
+            ${item.createdByName ? `<span>Pembuat: <strong>${esc(item.createdByName)}</strong></span>` : ''}
             ${item.decidedBy ? `<span>Reviewer: <strong>${esc(item.decidedBy)}</strong></span>` : ''}
             ${retryText ? `<span class="rejection-retry-pill" title="n8n otomatis meminta approval ulang, atau klik Tandai Selesai untuk langsung meminta approval sekarang">${esc(retryText)}</span>` : ''}
           </div>
@@ -2716,8 +3173,9 @@
         skipResumeBtn.addEventListener('click', () => completeRejection(item.id, skipResumeBtn, { skipResume: true }));
       }
 
-      listEl.appendChild(row);
+      frag.appendChild(row);
     }
+    listEl.replaceChildren(frag);
   }
 
   async function completeRejection(rejectionId, triggerBtn, opts = {}) {
@@ -3300,8 +3758,39 @@
       switchView('approvals');
     });
 
+    $('#login-form')?.addEventListener('submit', handleLoginSubmit);
+    $('#btn-toggle-login-pw')?.addEventListener('click', () => {
+      const inp = $('#login-password');
+      const btn = $('#btn-toggle-login-pw');
+      if (!inp || !btn) return;
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.textContent = show ? 'Tutup' : 'Lihat';
+    });
+    $('#btn-logout')?.addEventListener('click', handleLogout);
+    $('#btn-user-modal')?.addEventListener('click', () => openUserModal('account'));
+    $('#btn-open-user-modal-from-settings')?.addEventListener('click', () => {
+      openUserModal(state.currentUser?.role === 'admin' ? 'users' : 'account');
+    });
+    $('#btn-close-user-modal')?.addEventListener('click', closeUserModal);
+    $('#user-modal')?.addEventListener('click', (e) => {
+      if (e.target === $('#user-modal')) closeUserModal();
+    });
+    $('#um-tab-account')?.addEventListener('click', () => switchUserModalTab('account'));
+    $('#um-tab-users')?.addEventListener('click', () => switchUserModalTab('users'));
+    $('#form-change-pw')?.addEventListener('submit', handleChangeOwnPassword);
+    $('#form-create-user')?.addEventListener('submit', handleCreateUser);
+    $('#btn-reset-pw-confirm')?.addEventListener('click', handleAdminResetPwSubmit);
+    $('#btn-reset-pw-cancel')?.addEventListener('click', () => {
+      if ($('#admin-reset-pw-box')) $('#admin-reset-pw-box').hidden = true;
+      state.resetPwTargetUser = null;
+    });
+
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !$('#settings-panel').hidden) {
+      if (e.key === 'Escape' && $('#user-modal') && !$('#user-modal').hidden) {
+        e.preventDefault();
+        closeUserModal();
+      } else if (e.key === 'Escape' && !$('#settings-panel').hidden) {
         e.preventDefault();
         $('#settings-panel').hidden = true;
         $('#btn-settings').setAttribute('aria-expanded', 'false');
@@ -3343,6 +3832,39 @@
     persist();
   }
 
+  async function startAppSession() {
+    if (!state.appStarted) {
+      state.appStarted = true;
+      updateWorkspaceChrome();
+      setActiveMode(wsState(state.activeWorkspace).activeMode, { skipPersist: true });
+      updateFormLink();
+      renderAllCards();
+      updateApprovalTabCounts();
+      const epEl = $('#appr-endpoint-url');
+      if (epEl) epEl.textContent = 'POST ' + approvalEndpointUrl();
+    }
+
+    const nameEl = $('#appr-analyst-name');
+    if (nameEl) nameEl.value = state.analystName;
+
+    await fetchSharedState(false);
+    await fetchApprovals(true, { notifyNew: false });
+
+    stopPollingTimers();
+    sharedPollTimer = setInterval(() => fetchSharedState(true), 15000);
+    approvalPollTimer = setInterval(() => {
+      if (state.view === 'approvals') fetchApprovals(true, { notifyNew: true });
+    }, 5000);
+
+    for (const ws of ['asoc', 'soc']) {
+      for (const card of state.workspaces[ws].cards) {
+        if (card.status === 'running' && (card.waitingUrl || card.historyId)) {
+          recheckCard(card);
+        }
+      }
+    }
+  }
+
   async function init() {
     loadLocalState();
     bindEvents();
@@ -3354,28 +3876,22 @@
       }
     }
 
-    updateWorkspaceChrome();
-    setActiveMode(wsState(state.activeWorkspace).activeMode, { skipPersist: true });
-    updateFormLink();
-    renderAllCards();
-    updateApprovalTabCounts();
-    const epEl = $('#appr-endpoint-url');
-    if (epEl) epEl.textContent = 'POST ' + approvalEndpointUrl();
-    const nameEl = $('#appr-analyst-name');
-    if (nameEl) nameEl.value = state.analystName;
-
-    await fetchSharedState(false);
-    await fetchApprovals(true, { notifyNew: false });
-    sharedPollTimer = setInterval(() => fetchSharedState(true), 15000);
-    approvalPollTimer = setInterval(() => {
-      if (state.view === 'approvals') fetchApprovals(true, { notifyNew: true });
-    }, 5000);
-
-    for (const ws of ['asoc', 'soc']) {
-      for (const card of state.workspaces[ws].cards) {
-        if (card.status === 'running' && (card.waitingUrl || card.historyId)) {
-          recheckCard(card);
-        }
+    try {
+      const me = await apiFetch('/api/auth/me');
+      const authEnabled = Boolean(me?.authEnabled);
+      if (authEnabled && !me?.authenticated) {
+        setAuthUiState(null, true);
+        return;
+      }
+      setAuthUiState(me?.user || null, authEnabled);
+      await startAppSession();
+    } catch {
+      // Fallback bila gagal cek /api/auth/me: ikuti flag CONFIG.authEnabled
+      if (state.authEnabled) {
+        setAuthUiState(null, true);
+      } else {
+        setAuthUiState(null, false);
+        await startAppSession();
       }
     }
   }

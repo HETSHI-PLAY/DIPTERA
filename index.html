@@ -11,6 +11,43 @@
 </head>
 
 <body>
+  <!-- Auth Gate Screen (Tampil saat AUTH_ENABLED=true dan belum login) -->
+  <section id="auth-screen" class="auth-screen" hidden aria-label="Halaman Login">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="auth-title">Masuk ke Diptera</h1>
+          <p class="auth-subtitle">ASOC &amp; SOC Unified Platform</p>
+        </div>
+      </div>
+
+      <form id="login-form" class="auth-form" novalidate>
+        <div class="field">
+          <label class="field-label" for="login-username">Username</label>
+          <input type="text" id="login-username" name="username" autocomplete="username" placeholder="Masukkan username" required spellcheck="false" />
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="login-password">Password</label>
+          <div class="pw-input-wrap">
+            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Masukkan password" required />
+            <button type="button" id="btn-toggle-login-pw" class="btn ghost btn-xs pw-toggle-btn">Lihat</button>
+          </div>
+        </div>
+
+        <div id="login-error" class="auth-error" hidden role="alert"></div>
+
+        <button type="submit" id="btn-login-submit" class="btn accent auth-submit-btn">Masuk</button>
+      </form>
+    </div>
+  </section>
+
   <!-- Tier 1: Global Topbar (Brand + Workspace Switcher + External Actions) -->
   <header class="topbar">
     <div class="ws-rail" aria-hidden="true"></div>
@@ -50,6 +87,14 @@
             <path d="M7 17L17 7M9 7h8v8" />
           </svg>
         </a>
+        <div class="user-bar" id="user-bar" hidden>
+          <button class="user-pill" id="btn-user-modal" type="button" title="Pengaturan Akun &amp; Manajemen User">
+            <span class="user-avatar" id="user-avatar" aria-hidden="true"></span>
+            <span class="user-name" id="user-display-name"></span>
+            <span class="role-badge" id="user-role-badge"></span>
+          </button>
+          <button class="btn ghost btn-sm" id="btn-logout" type="button" title="Keluar dari sesi">Keluar</button>
+        </div>
         <button class="btn ghost btn-sm icon-btn" id="btn-settings" type="button" title="Pengaturan Workspace" aria-expanded="false" aria-controls="settings-panel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
@@ -148,9 +193,12 @@
           <h2 class="settings-title" id="settings-title">Pengaturan Workspace ASOC</h2>
           <p class="field-hint" id="settings-subtitle">Konfigurasi &amp; acuan nomor server tersimpan terpisah antara ASOC dan SOC.</p>
         </div>
-        <div class="settings-ws-tabs" role="group" aria-label="Pilih pengaturan workspace">
-          <button class="ws-tab-btn active" id="set-ws-asoc" type="button" data-set-ws="asoc" data-ws="asoc" aria-pressed="true">Pengaturan ASOC</button>
-          <button class="ws-tab-btn" id="set-ws-soc" type="button" data-set-ws="soc" data-ws="soc" aria-pressed="false">Pengaturan SOC</button>
+        <div class="settings-head-actions">
+          <button class="btn ghost btn-xs" id="btn-open-user-modal-from-settings" type="button" hidden>Kelola Akun &amp; User</button>
+          <div class="settings-ws-tabs" role="group" aria-label="Pilih pengaturan workspace">
+            <button class="ws-tab-btn active" id="set-ws-asoc" type="button" data-set-ws="asoc" data-ws="asoc" aria-pressed="true">Pengaturan ASOC</button>
+            <button class="ws-tab-btn" id="set-ws-soc" type="button" data-set-ws="soc" data-ws="soc" aria-pressed="false">Pengaturan SOC</button>
+          </div>
         </div>
       </div>
 
@@ -369,6 +417,7 @@
               <th>Case ID</th>
               <th>Case Name &amp; Severity</th>
               <th>Status</th>
+              <th>Analis / Reviewer</th>
               <th class="col-actions">Aksi</th>
             </tr>
           </thead>
@@ -387,6 +436,7 @@
         <div class="approval-analyst-wrap">
           <label class="field-label" for="appr-analyst-name">Reviewer / Analis</label>
           <input type="text" id="appr-analyst-name" placeholder="Nama analis (opsional, tercatat di log keputusan)" spellcheck="false" />
+          <div class="reviewer-locked-pill" id="appr-reviewer-pill" hidden></div>
         </div>
         <div class="approval-endpoint-wrap">
           <span class="field-label">Endpoint Intake n8n</span>
@@ -468,6 +518,118 @@
       </div>
     </section>
   </main>
+
+  <!-- Modal Akun & Manajemen User -->
+  <div id="user-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2 id="user-modal-title">Pengaturan Akun</h2>
+          <p class="field-hint" id="user-modal-subtitle">Ganti password Anda atau kelola pengguna Diptera.</p>
+        </div>
+        <button type="button" class="btn ghost btn-sm" id="btn-close-user-modal" aria-label="Tutup modal">Tutup</button>
+      </div>
+
+      <div class="modal-tabs" role="tablist" aria-label="Menu akun dan user">
+        <button type="button" class="modal-tab active" id="um-tab-account" role="tab" aria-selected="true" aria-controls="um-panel-account">Akun &amp; Password</button>
+        <button type="button" class="modal-tab" id="um-tab-users" role="tab" aria-selected="false" aria-controls="um-panel-users" hidden>Manajemen User</button>
+      </div>
+
+      <div class="modal-body">
+        <section id="um-panel-account" role="tabpanel" aria-labelledby="um-tab-account">
+          <div class="um-profile-card">
+            <div class="um-profile-meta">
+              <strong id="um-profile-name">—</strong>
+              <span class="mono field-hint" id="um-profile-username">@—</span>
+            </div>
+            <span class="role-badge" id="um-profile-role">ANALYST</span>
+          </div>
+
+          <form id="form-change-pw" class="um-form-stack" novalidate>
+            <h3 class="um-section-title">Ganti Password Saya</h3>
+            <div class="um-form-grid">
+              <label class="field">
+                <span class="field-label">Password Saat Ini</span>
+                <input type="password" id="pw-current" autocomplete="current-password" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Password Baru (min. 6 karakter)</span>
+                <input type="password" id="pw-new" autocomplete="new-password" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Konfirmasi Password Baru</span>
+                <input type="password" id="pw-confirm" autocomplete="new-password" required />
+              </label>
+            </div>
+            <div id="pw-msg" class="um-msg" hidden></div>
+            <div class="um-form-actions">
+              <button type="submit" id="btn-save-pw" class="btn primary btn-sm">Simpan Password Baru</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="um-panel-users" role="tabpanel" aria-labelledby="um-tab-users" hidden>
+          <form id="form-create-user" class="um-form-stack" novalidate>
+            <h3 class="um-section-title">Tambah User Baru</h3>
+            <div class="um-form-grid">
+              <label class="field">
+                <span class="field-label">Username</span>
+                <input type="text" id="new-user-username" placeholder="mis. budi.soc" required spellcheck="false" />
+              </label>
+              <label class="field">
+                <span class="field-label">Nama Tampilan</span>
+                <input type="text" id="new-user-displayname" placeholder="mis. Budi Santoso" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Role</span>
+                <select id="new-user-role">
+                  <option value="analyst">Analyst</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Password Awal (min. 6 karakter)</span>
+                <input type="password" id="new-user-password" autocomplete="new-password" required />
+              </label>
+            </div>
+            <div id="create-user-msg" class="um-msg" hidden></div>
+            <div class="um-form-actions">
+              <button type="submit" id="btn-create-user" class="btn accent btn-sm">+ Buat User</button>
+            </div>
+          </form>
+
+          <div id="admin-reset-pw-box" class="inline-reset-box" hidden>
+            <div class="inline-reset-head">
+              <strong id="reset-pw-target-label">Reset Password User</strong>
+            </div>
+            <div class="inline-reset-controls">
+              <input type="password" id="reset-pw-input" placeholder="Password baru (min. 6 karakter)" autocomplete="new-password" />
+              <button type="button" id="btn-reset-pw-confirm" class="btn primary btn-xs">Simpan Password</button>
+              <button type="button" id="btn-reset-pw-cancel" class="btn ghost btn-xs">Batal</button>
+            </div>
+          </div>
+
+          <div class="users-table-section">
+            <h3 class="um-section-title">Daftar User Terdaftar</h3>
+            <div class="users-table-wrap">
+              <table class="users-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Dibuat</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody id="users-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 

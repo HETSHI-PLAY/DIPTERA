@@ -8,7 +8,10 @@ ENV NODE_ENV=production \
     DATA_DIR=/app/data \
     IRIS_IN_CONTAINER=1
 
-COPY index.html styles.css tenants.css app.js extract.js numbering.js config.js server.js ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY index.html styles.css tenants.css app.js extract.js numbering.js config.js db.js auth.js server.js ./
 
 RUN mkdir -p /app/data && chown -R node:node /app
 

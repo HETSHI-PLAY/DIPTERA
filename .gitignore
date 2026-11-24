@@ -1,7 +1,43 @@
+# Environment & Secrets
 .env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+credentials*.json
+*credential*.json
+*secret*.json
+
+# Local Runtime Data, Database & Backups
 data/
+pgdata/
+postgres-data/
+backups/
+*.sql
+*.dump
+*.sqlite
+*.sqlite3
+*.db
+
+# Dependencies & Logs
 node_modules/
+npm-debug.log*
+*.log
+
+# Backups, Editor & OS Artifacts
 *.bak
+*.orig
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local n8n Workflows & Internal Docs
 Alpha Reporter v2 (1).json
+Alpha Reporter*.json
+*.workflow.json
 update.md
 finding.md
