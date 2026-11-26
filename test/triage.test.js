@@ -87,32 +87,49 @@ async function main() {
           return res.end(JSON.stringify({ hits: { total: { value: matched.length }, hits: matched } }));
         }
 
-        // Handle severity & watermark filtering
+        // Handle severity & watermark/time-range filtering
         const filters = parsed?.query?.bool?.filter || [];
         let minLv = 0;
         let maxLv = 99;
         let sinceMs = null;
+        let sinceInclusive = false;
+        let untilMs = null;
         for (const f of filters) {
           if (f.range?.['rule.level']) {
             minLv = f.range['rule.level'].gte ?? minLv;
             maxLv = f.range['rule.level'].lte ?? maxLv;
           }
-          if (f.range?.['@timestamp']?.gt) {
-            sinceMs = Date.parse(f.range['@timestamp'].gt);
+          if (f.range?.['@timestamp']) {
+            if (f.range['@timestamp'].gte) {
+              sinceMs = Date.parse(f.range['@timestamp'].gte);
+              sinceInclusive = true;
+            } else if (f.range['@timestamp'].gt) {
+              sinceMs = Date.parse(f.range['@timestamp'].gt);
+              sinceInclusive = false;
+            }
+            if (f.range['@timestamp'].lte) {
+              untilMs = Date.parse(f.range['@timestamp'].lte);
+            }
           }
         }
         const filtered = mockWazuhHits.filter((h) => {
           const lv = Number(h._source?.rule?.level || 0);
           if (lv < minLv || lv > maxLv) return false;
-          if (sinceMs != null && Date.parse(h._source['@timestamp']) <= sinceMs) return false;
+          const tsMs = Date.parse(h._source['@timestamp']);
+          if (sinceMs != null && (sinceInclusive ? tsMs < sinceMs : tsMs <= sinceMs)) return false;
+          if (untilMs != null && tsMs > untilMs) return false;
           return true;
         });
+
+        const pageHits = parsed?.size === 0
+          ? []
+          : filtered.slice(0, Number(parsed?.size) > 0 ? Number(parsed.size) : filtered.length);
 
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({
           hits: {
             total: { value: filtered.length, relation: 'eq' },
-            hits: filtered,
+            hits: pageHits,
           },
         }));
       }
@@ -578,7 +595,66 @@ async function main() {
     const postRemovePoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
     assert.equal(postRemovePoll.json.analyzedCount, 0);
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (10/10)');
+    // 11. Manual Poll Time-Range & Purge Triage Database
+    const badRange = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:05:00.000Z', to: '2029-11-26T10:00:00.000Z' },
+    });
+    assert.equal(badRange.status, 400);
+
+    wazuhQueries = [];
+    const presetPoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: '1h', size: 50 },
+    });
+    assert.equal(presetPoll.status, 200);
+    assert.ok(wazuhQueries.length >= 1);
+    const lastTsFilter = wazuhQueries[wazuhQueries.length - 1].body.query.bool.filter.find((f) => f.range?.['@timestamp']);
+    assert.ok(lastTsFilter?.range?.['@timestamp']?.gte, 'Preset range must set gte filter');
+    assert.equal(lastTsFilter?.range?.['@timestamp']?.lte, undefined);
+
+    const purgeStateRes = await httpJson(`${baseUrl}/api/triage/purge`, {
+      method: 'POST',
+      body: { clearState: true, includeHistory: false },
+    });
+    assert.equal(purgeStateRes.status, 200);
+    assert.equal(purgeStateRes.json.ok, true);
+    assert.equal(purgeStateRes.json.snapshot.groups.length, 0);
+    assert.equal(purgeStateRes.json.snapshot.watermarkTimestamp, null);
+    assert.equal(purgeStateRes.json.snapshot.historyCount, 1);
+
+    const cfgAfterPurge = await httpJson(`${baseUrl}/api/triage/config`);
+    assert.equal(cfgAfterPurge.json.config.wazuh.url, wazuhUrl);
+
+    // Custom time range re-pulls purged alerts in [10:00:00Z .. 10:00:10Z] (the 6 w-burst-* hits)
+    const customRePull = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: {
+        action: 'poll_now',
+        range: 'custom',
+        from: '2029-11-26T10:00:00.000Z',
+        to: '2029-11-26T10:00:10.000Z',
+        size: 20,
+      },
+    });
+    assert.equal(customRePull.status, 200);
+    assert.equal(customRePull.json.fetchedCount, 6);
+    assert.equal(customRePull.json.analyzedCount, 6);
+
+    // Purge history only -> keeps active triage groups intact
+    const purgeHistRes = await httpJson(`${baseUrl}/api/triage/purge`, {
+      method: 'POST',
+      body: { clearState: false, includeHistory: true },
+    });
+    assert.equal(purgeHistRes.status, 200);
+    assert.equal(purgeHistRes.json.clearedHistory, 1);
+    assert.equal(purgeHistRes.json.snapshot.historyCount, 0);
+    assert.ok(purgeHistRes.json.snapshot.groups.length >= 1);
+
+    const histAfterPurge = await httpJson(`${baseUrl}/api/triage/history`);
+    assert.equal(histAfterPurge.json.items.length, 0);
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (11/11)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

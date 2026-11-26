@@ -723,7 +723,7 @@ function createTriageEngine(options = {}) {
     };
   }
 
-  async function queryWazuhAlerts({ sinceIso = null, size = 500, minLevel, maxLevel } = {}) {
+  async function queryWazuhAlerts({ sinceIso = null, untilIso = null, inclusiveSince = false, size = 500, minLevel, maxLevel } = {}) {
     const w = config.wazuh;
     if (!String(w.url || '').trim()) {
       throw Object.assign(new Error('Wazuh Indexer URL belum dikonfigurasi.'), { status: 400 });
@@ -731,7 +731,12 @@ function createTriageEngine(options = {}) {
     const gte = Number(minLevel ?? w.minRuleLevel ?? 7);
     const lte = Number(maxLevel ?? w.maxRuleLevel ?? 15);
     const filter = [{ range: { 'rule.level': { gte, lte } } }];
-    if (sinceIso) filter.push({ range: { '@timestamp': { gt: sinceIso } } });
+    if (sinceIso || untilIso) {
+      const tsRange = {};
+      if (sinceIso) tsRange[inclusiveSince ? 'gte' : 'gt'] = sinceIso;
+      if (untilIso) tsRange.lte = untilIso;
+      filter.push({ range: { '@timestamp': tsRange } });
+    }
 
     const body = {
       size: Math.min(Math.max(1, Number(size) || 500), 1000),
@@ -1159,7 +1164,60 @@ function createTriageEngine(options = {}) {
     return { excludedCount, analyzedCount };
   }
 
-  function pollOnce() {
+  const POLL_RANGE_MS = {
+    '15m': 15 * 60 * 1000,
+    '30m': 30 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '6h': 6 * 60 * 60 * 1000,
+    '12h': 12 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+  };
+
+  function resolvePollWindow(opts = {}) {
+    const range = String(opts?.range || '').trim().toLowerCase();
+    const hasCustomBounds = Boolean(opts?.from || opts?.to);
+    if (range === 'custom' || hasCustomBounds) {
+      let sinceIso = null;
+      let untilIso = null;
+      if (opts?.from) {
+        const ms = Date.parse(opts.from);
+        if (Number.isNaN(ms)) {
+          throw Object.assign(new Error('Format waktu mulai (Dari) tidak valid.'), { status: 400 });
+        }
+        sinceIso = new Date(ms).toISOString();
+      }
+      if (opts?.to) {
+        const ms = Date.parse(opts.to);
+        if (Number.isNaN(ms)) {
+          throw Object.assign(new Error('Format waktu akhir (Sampai) tidak valid.'), { status: 400 });
+        }
+        untilIso = new Date(ms).toISOString();
+      }
+      if (sinceIso && untilIso && Date.parse(sinceIso) > Date.parse(untilIso)) {
+        throw Object.assign(new Error('Waktu mulai (Dari) tidak boleh lebih besar dari waktu akhir (Sampai).'), { status: 400 });
+      }
+      return { sinceIso, untilIso, inclusiveSince: true };
+    }
+
+    if (Object.prototype.hasOwnProperty.call(POLL_RANGE_MS, range)) {
+      return {
+        sinceIso: new Date(Date.now() - POLL_RANGE_MS[range]).toISOString(),
+        untilIso: null,
+        inclusiveSince: true,
+      };
+    }
+
+    return {
+      sinceIso: state.watermarkTimestamp,
+      untilIso: null,
+      inclusiveSince: false,
+    };
+  }
+
+  function pollOnce(opts = {}) {
+    const win = resolvePollWindow(opts);
+    const maxSize = Math.min(Math.max(1, Number(opts?.size) || 500), 1000);
     const run = pollLock.then(async () => {
       if (!String(config.wazuh.url || '').trim()) {
         return { ok: false, skipped: true, reason: 'Wazuh Indexer URL belum diatur' };
@@ -1170,8 +1228,10 @@ function createTriageEngine(options = {}) {
 
       try {
         const { hits } = await queryWazuhAlerts({
-          sinceIso: state.watermarkTimestamp,
-          size: 500,
+          sinceIso: win.sinceIso,
+          untilIso: win.untilIso,
+          inclusiveSince: win.inclusiveSince,
+          size: maxSize,
           minLevel: config.wazuh.minRuleLevel,
           maxLevel: config.wazuh.maxRuleLevel,
         });
@@ -1188,6 +1248,7 @@ function createTriageEngine(options = {}) {
           fetchedCount: hits.length,
           excludedCount,
           analyzedCount,
+          window: { sinceIso: win.sinceIso, untilIso: win.untilIso },
           snapshot: getQueueSnapshot(),
         };
       } catch (err) {
@@ -1595,6 +1656,39 @@ function createTriageEngine(options = {}) {
     };
   }
 
+  function purgeTriageDatabase({ clearState = true, includeHistory = false, resetWatermarkToNow = false } = {}) {
+    const doClearState = clearState !== false;
+    const doIncludeHistory = Boolean(includeHistory);
+    const clearedGroups = doClearState ? state.groups.length : 0;
+    const clearedProcessed = doClearState ? state.processedAlertIds.length : 0;
+    const clearedDismissed = doClearState ? state.dismissedAlertIds.length : 0;
+    const clearedHistory = doIncludeHistory ? caseHistory.length : 0;
+
+    if (doClearState) {
+      state = defaultTriageState();
+      if (resetWatermarkToNow === true) {
+        state.watermarkTimestamp = new Date().toISOString();
+      }
+      saveState();
+    }
+    if (doIncludeHistory) {
+      caseHistory = [];
+      saveCaseHistory();
+    }
+
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      clearState: doClearState,
+      includeHistory: doIncludeHistory,
+      clearedGroups,
+      clearedProcessed,
+      clearedDismissed,
+      clearedHistory,
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
   function promoteToCase(payload = {}, user = null) {
     const groupId = String(payload.groupId || '').trim();
     const wantedAlertIds = Array.isArray(payload.alertIds) && payload.alertIds.length
@@ -1789,6 +1883,7 @@ function createTriageEngine(options = {}) {
     removeAlertsFromGroup,
     dismissGroups,
     resetQueue,
+    purgeTriageDatabase,
     promoteToCase,
     listCaseHistory,
     fetchHistoryWazuhDetails,

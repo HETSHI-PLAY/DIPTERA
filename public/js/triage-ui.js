@@ -968,13 +968,46 @@
     });
 
     // Triage Queue Toolbar
+    const toLocalDatetimeValue = (d) => {
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+
+    $('#trg-poll-range')?.addEventListener('change', (e) => {
+      const customBar = $('#trg-custom-range-bar');
+      const isCustom = e.target.value === 'custom';
+      if (customBar) customBar.hidden = !isCustom;
+      if (isCustom) {
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - 3600 * 1000);
+        if ($('#trg-poll-from') && !$('#trg-poll-from').value) $('#trg-poll-from').value = toLocalDatetimeValue(oneHourAgo);
+        if ($('#trg-poll-to') && !$('#trg-poll-to').value) $('#trg-poll-to').value = toLocalDatetimeValue(now);
+      }
+    });
+
     $('#btn-triage-poll-now')?.addEventListener('click', async () => {
       const btn = $('#btn-triage-poll-now');
+      const range = $('#trg-poll-range')?.value || '1h';
+      const pollBody = { action: 'poll_now', range };
+      const sizeVal = Number($('#trg-poll-size')?.value || 200);
+      if (Number.isFinite(sizeVal) && sizeVal > 0) pollBody.size = Math.min(1000, Math.max(1, sizeVal));
+
+      if (range === 'custom') {
+        const rawFrom = $('#trg-poll-from')?.value || '';
+        const rawTo = $('#trg-poll-to')?.value || '';
+        if (!rawFrom && !rawTo) {
+          B.toast({ type: 'error', title: 'Rentang waktu kosong', body: 'Isi minimal waktu Dari atau Sampai untuk menarik alert.' });
+          return;
+        }
+        if (rawFrom) pollBody.from = new Date(rawFrom).toISOString();
+        if (rawTo) pollBody.to = new Date(rawTo).toISOString();
+      }
+
       if (btn) btn.disabled = true;
       try {
         const res = await B.apiFetch('/api/triage/worker', {
           method: 'POST',
-          body: JSON.stringify({ action: 'poll_now' }),
+          body: JSON.stringify(pollBody),
         });
         if (res.skipped) {
           B.toast({ type: 'info', title: 'Wazuh URL belum diatur', body: 'Isi konfigurasi Wazuh Indexer di Pengaturan → Wazuh & AI Triage.' });
@@ -1032,10 +1065,75 @@
         });
         triageState.snapshot = res.snapshot;
         triageState.selectedGroupIds.clear();
+        triageState.selectedSubAlertsByGroup.clear();
         renderTriageView();
         B.toast({ type: 'info', title: 'Antrean dibersihkan & watermark direset' });
       } catch (err) {
         B.toast({ type: 'error', title: 'Gagal mereset antrean', body: err.message });
+      }
+    });
+
+    const wireDoubleConfirm = (btnEl, confirmLabel, onConfirm) => {
+      if (!btnEl) return;
+      const defaultLabel = btnEl.textContent;
+      let timer = null;
+      btnEl.addEventListener('click', async () => {
+        if (btnEl.dataset.armed !== '1') {
+          btnEl.dataset.armed = '1';
+          btnEl.textContent = confirmLabel;
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            btnEl.dataset.armed = '0';
+            btnEl.textContent = defaultLabel;
+          }, 5000);
+          return;
+        }
+        clearTimeout(timer);
+        btnEl.dataset.armed = '0';
+        btnEl.textContent = defaultLabel;
+        await onConfirm();
+      });
+    };
+
+    wireDoubleConfirm($('#btn-triage-purge'), 'Klik lagi untuk Hapus DB Triage', async () => {
+      try {
+        const res = await B.apiFetch('/api/triage/purge', {
+          method: 'POST',
+          body: JSON.stringify({ clearState: true, includeHistory: false }),
+        });
+        triageState.snapshot = res.snapshot;
+        triageState.selectedGroupIds.clear();
+        triageState.expandedGroupIds.clear();
+        triageState.selectedSubAlertsByGroup.clear();
+        renderTriageView();
+        B.toast({
+          type: 'success',
+          title: 'Database Triage dikosongkan',
+          body: `${res.clearedGroups || 0} grup & ${res.clearedProcessed || 0} riwayat dedup alert dihapus. Konfigurasi Wazuh/Ollama tetap aman.`,
+        });
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal menghapus database triage', body: err.message });
+      }
+    });
+
+    wireDoubleConfirm($('#btn-triage-purge-history'), 'Klik lagi untuk Hapus Audit', async () => {
+      try {
+        const res = await B.apiFetch('/api/triage/purge', {
+          method: 'POST',
+          body: JSON.stringify({ clearState: false, includeHistory: true }),
+        });
+        if (res.snapshot) {
+          triageState.snapshot = res.snapshot;
+          updateSidebarBadges(res.snapshot);
+        }
+        await fetchTriageHistory(true);
+        B.toast({
+          type: 'info',
+          title: 'Audit Triage dikosongkan',
+          body: `${res.clearedHistory || 0} entri audit dihapus.`,
+        });
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal menghapus Audit Triage', body: err.message });
       }
     });
 

@@ -2680,7 +2680,12 @@ function createServer(options = {}) {
             return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
           }
           if (action === 'poll_now') {
-            const resPoll = await triage.pollOnce();
+            const resPoll = await triage.pollOnce({
+              range: body?.range,
+              from: body?.from,
+              to: body?.to,
+              size: body?.size,
+            });
             return sendJson(res, method, 200, resPoll);
           }
           return sendJson(res, method, 400, { error: 'Aksi worker harus start, pause, atau poll_now' });
@@ -2733,6 +2738,15 @@ function createServer(options = {}) {
         if (method === 'POST' && pathname === '/api/triage/reset') {
           const body = await readJsonBody(req);
           const result = triage.resetQueue(body?.watermarkTimestamp);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/purge') {
+          const body = await readJsonBody(req);
+          const result = triage.purgeTriageDatabase({
+            clearState: body?.clearState !== false,
+            includeHistory: Boolean(body?.includeHistory),
+            resetWatermarkToNow: Boolean(body?.resetWatermarkToNow),
+          });
           return sendJson(res, method, 200, result);
         }
         if (method === 'POST' && pathname === '/api/triage/promote') {

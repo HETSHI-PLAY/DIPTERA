@@ -3011,6 +3011,38 @@ textarea {
   cursor: pointer;
 }
 
+.triage-range-select {
+  width: auto;
+  min-width: 168px;
+}
+
+.triage-custom-range-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.triage-custom-range-bar[hidden] {
+  display: none;
+}
+
+.triage-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.triage-range-field-sm {
+  min-width: 112px;
+  max-width: 132px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
