@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126m" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126m" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126m" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126n" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126n" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126n" />
 </head>
 
 <body>
@@ -142,6 +142,9 @@
           </button>
           <button class="sidebar-item" id="tab-triage-exclusions" type="button" role="tab" aria-selected="false" aria-controls="view-triage-exclusions">
             <span>Daftar Exclude</span>
+          </button>
+          <button class="sidebar-item" id="tab-triage-stats" type="button" role="tab" aria-selected="false" aria-controls="view-triage-stats">
+            <span>Statistik Triage</span>
           </button>
         </div>
       </div>
@@ -406,7 +409,7 @@
 
               <label class="field field-full">
                 <span class="field-label">Tenant Mapping Rules (JSON: agent.name / wildcard -&gt; tenant)</span>
-                <textarea id="trg-tenant-mapping" rows="3" spellcheck="false" placeholder='{"pradita-*": "praditauniversity", "sebatik": "instikibali"}'></textarea>
+                <textarea id="trg-tenant-mapping" rows="3" spellcheck="false" placeholder='{"web-prod-*": "tenant-a", "srv-app-*": "tenant-b"}'></textarea>
               </label>
             </div>
 
@@ -1053,7 +1056,7 @@
           <div id="ex-add-form" class="triage-custom-range-bar" hidden>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Tenant (kosong = Global)</span>
-              <input type="text" id="ex-new-tenant" list="ex-tenant-list" placeholder="Global / ikmicirebon" spellcheck="false" />
+              <input type="text" id="ex-new-tenant" list="ex-tenant-list" placeholder="Global (kosong) / nama-tenant" spellcheck="false" />
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Target</span>
@@ -1081,7 +1084,7 @@
             </label>
             <label class="triage-range-field">
               <span class="field-label">Pola (pakai * untuk nilai dinamis)</span>
-              <input type="text" id="ex-new-pattern" placeholder="/service/mhs/*/ip-kemarin atau *.log" spellcheck="false" />
+              <input type="text" id="ex-new-pattern" placeholder="/app/item/*/status atau *.log" spellcheck="false" />
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Kunci Rule ID (AND)</span>
@@ -1093,15 +1096,15 @@
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Kunci Source IP (AND)</span>
-              <input type="text" id="ex-new-src-ips" placeholder="123.253.78.156" spellcheck="false" />
+              <input type="text" id="ex-new-src-ips" placeholder="192.0.2.10 atau 10.0.0.*" spellcheck="false" />
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Kunci User-Agent (AND)</span>
-              <input type="text" id="ex-new-ua" placeholder="MoodleMobile" spellcheck="false" />
+              <input type="text" id="ex-new-ua" placeholder="MobileApp atau HealthCheck" spellcheck="false" />
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Kunci Referer (AND)</span>
-              <input type="text" id="ex-new-referer" placeholder="indigoes.ikmi.ac.id" spellcheck="false" />
+              <input type="text" id="ex-new-referer" placeholder="portal.example.com" spellcheck="false" />
             </label>
             <label class="triage-range-field">
               <span class="field-label">Keterangan (opsional)</span>
@@ -1161,6 +1164,84 @@
           <div id="exclusions-page-empty" class="empty" hidden>
             <h2>Belum ada rule exclude</h2>
             <p>Gunakan tombol "Abaikan + Exclude" pada kartu AI Triage atau tambahkan aturan baru di atas.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 8B: Statistik AI Triage -->
+        <section id="view-triage-stats" class="triage-view" role="tabpanel" aria-labelledby="tab-triage-stats" hidden>
+          <div class="triage-status-bar">
+            <span class="sync-pill offline" id="stats-worker-pill">Worker Pause</span>
+            <span class="field-hint">Ringkasan jumlah alert yang sudah ditriage AI, dijadikan Case, dan disaring oleh aturan Exclude.</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn accent btn-sm" id="btn-stats-refresh">Segarkan</button>
+          </div>
+
+          <div class="triage-stats-kpi-grid">
+            <article class="triage-stat-card">
+              <span class="triage-stat-label">Alert Ditriage AI</span>
+              <span class="triage-stat-value" id="stat-ai-triaged">0</span>
+              <span class="triage-stat-sub" id="stat-total-handled">0 total alert ditangani</span>
+            </article>
+            <article class="triage-stat-card">
+              <span class="triage-stat-label">Dijadikan Case</span>
+              <span class="triage-stat-value" id="stat-case-alerts">0</span>
+              <span class="triage-stat-sub" id="stat-case-count">0 case dibuat</span>
+            </article>
+            <article class="triage-stat-card">
+              <span class="triage-stat-label">Disaring Exclude</span>
+              <span class="triage-stat-value" id="stat-excluded-alerts">0</span>
+              <span class="triage-stat-sub" id="stat-ex-rules">0 / 0 aturan aktif</span>
+            </article>
+            <article class="triage-stat-card">
+              <span class="triage-stat-label">Antrean Aktif &amp; Diabaikan</span>
+              <span class="triage-stat-value" id="stat-active-alerts">0</span>
+              <span class="triage-stat-sub" id="stat-dismissed-alerts">0 grup aktif · 0 diabaikan</span>
+            </article>
+          </div>
+
+          <div class="triage-telemetry-strip" id="stat-verdict-strip" aria-live="polite">
+            <span class="triage-tel-item"><strong>True Positive:</strong> <span id="stat-v-tp" class="mono">0 grup (0 alert)</span></span>
+            <span class="triage-tel-item"><strong>Perlu Ditinjau:</strong> <span id="stat-v-review" class="mono">0 grup (0 alert)</span></span>
+            <span class="triage-tel-item"><strong>False Positive:</strong> <span id="stat-v-fp" class="mono">0 grup (0 alert)</span></span>
+            <span class="triage-tel-item"><strong>Siklus Terakhir:</strong> <span id="stat-last-cycle" class="mono">Belum ada</span></span>
+          </div>
+
+          <div class="triage-stats-tables">
+            <div class="triage-stats-panel">
+              <h3>Ringkasan per Tenant</h3>
+              <div class="wzh-discover-wrap">
+                <table class="wzh-discover-table">
+                  <thead>
+                    <tr>
+                      <th>Tenant</th>
+                      <th>Antrean Aktif</th>
+                      <th>Case Dibuat</th>
+                      <th>Alert Case</th>
+                      <th>Rule Exclude</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stats-tenant-tbody"></tbody>
+                </table>
+              </div>
+              <div id="stats-tenant-empty" class="field-hint" hidden>Belum ada aktivitas tenant yang tercatat.</div>
+            </div>
+
+            <div class="triage-stats-panel">
+              <h3>Rule Exclude Paling Sering Terpicu</h3>
+              <div class="wzh-discover-wrap">
+                <table class="wzh-discover-table">
+                  <thead>
+                    <tr>
+                      <th>Pola Rule</th>
+                      <th>Jumlah Terblokir</th>
+                      <th>Terakhir Terpicu</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stats-top-ex-tbody"></tbody>
+                </table>
+              </div>
+              <div id="stats-top-ex-empty" class="field-hint" hidden>Belum ada alert yang tersaring oleh rule exclude.</div>
+            </div>
           </div>
         </section>
 
@@ -1377,11 +1458,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126m"></script>
-  <script src="/js/numbering.js?v=20261126m"></script>
-  <script src="/js/extract.js?v=20261126m"></script>
-  <script src="/js/app.js?v=20261126m"></script>
-  <script src="/js/triage-ui.js?v=20261126m"></script>
+  <script src="/config.js?v=20261126n"></script>
+  <script src="/js/numbering.js?v=20261126n"></script>
+  <script src="/js/extract.js?v=20261126n"></script>
+  <script src="/js/app.js?v=20261126n"></script>
+  <script src="/js/triage-ui.js?v=20261126n"></script>
 </body>
 
 </html>

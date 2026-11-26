@@ -837,6 +837,110 @@
     }
   }
 
+  function renderTriageStats(data) {
+    if (!data || !data.summary) return;
+    const s = data.summary || {};
+    const v = data.verdicts || {};
+    const ws = data.workerStatus || {};
+
+    const pill = $('#stats-worker-pill');
+    if (pill) {
+      if (ws.running) {
+        pill.textContent = ws.aiActive ? 'AI Menganalisis…' : 'Polling…';
+        pill.className = 'sync-pill';
+      } else if (data.workerEnabled) {
+        pill.textContent = 'Worker Aktif';
+        pill.className = 'sync-pill';
+      } else {
+        pill.textContent = 'Worker Pause';
+        pill.className = 'sync-pill offline';
+      }
+    }
+
+    if ($('#stat-ai-triaged')) $('#stat-ai-triaged').textContent = String(s.aiTriagedAlerts || 0);
+    if ($('#stat-total-handled')) $('#stat-total-handled').textContent = `${s.totalHandledAlerts || 0} total alert ditangani`;
+    if ($('#stat-case-alerts')) $('#stat-case-alerts').textContent = String(s.caseAlerts || 0);
+    if ($('#stat-case-count')) $('#stat-case-count').textContent = `${s.casesCreated || 0} case dibuat`;
+    if ($('#stat-excluded-alerts')) $('#stat-excluded-alerts').textContent = String(s.excludedAlerts || 0);
+    if ($('#stat-ex-rules')) $('#stat-ex-rules').textContent = `${s.activeExclusionRules || 0} / ${s.totalExclusionRules || 0} aturan aktif`;
+    if ($('#stat-active-alerts')) $('#stat-active-alerts').textContent = String(s.activeQueueAlerts || 0);
+    if ($('#stat-dismissed-alerts')) {
+      $('#stat-dismissed-alerts').textContent = `${s.activeQueueGroups || 0} grup aktif · ${s.dismissedAlerts || 0} diabaikan`;
+    }
+
+    if ($('#stat-v-tp')) {
+      $('#stat-v-tp').textContent = `${v.TRUE_POSITIVE?.groups || 0} grup (${v.TRUE_POSITIVE?.alerts || 0} alert)`;
+    }
+    if ($('#stat-v-review')) {
+      $('#stat-v-review').textContent = `${v.NEEDS_REVIEW?.groups || 0} grup (${v.NEEDS_REVIEW?.alerts || 0} alert)`;
+    }
+    if ($('#stat-v-fp')) {
+      $('#stat-v-fp').textContent = `${v.FALSE_POSITIVE?.groups || 0} grup (${v.FALSE_POSITIVE?.alerts || 0} alert)`;
+    }
+    if ($('#stat-last-cycle')) {
+      if (ws.lastSuccessAt) {
+        const dur = ws.lastDurationMs > 0 ? ` · ${(ws.lastDurationMs / 1000).toFixed(1)}s` : '';
+        $('#stat-last-cycle').textContent =
+          `${B.fmtWib(ws.lastSuccessAt)} (${ws.lastBatchCount || 0} ditarik, ${ws.lastExcludedCount || 0} excluded, ${ws.lastAnalyzedCount || 0} AI${dur})`;
+      } else {
+        $('#stat-last-cycle').textContent = 'Belum ada siklus selesai';
+      }
+    }
+
+    const tBody = $('#stats-tenant-tbody');
+    const tEmpty = $('#stats-tenant-empty');
+    if (tBody && tEmpty) {
+      tBody.innerHTML = '';
+      const rows = Array.isArray(data.perTenant) ? data.perTenant : [];
+      if (!rows.length) {
+        tEmpty.hidden = false;
+      } else {
+        tEmpty.hidden = true;
+        for (const r of rows) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><span class="chip mode-reporting">${B.esc(r.tenant)}</span></td>
+            <td class="mono">${r.activeGroups} grup (${r.activeAlerts} alert)</td>
+            <td class="mono">${r.casesCreated}</td>
+            <td class="mono">${r.caseAlerts}</td>
+            <td class="mono">${r.exclusionRules}</td>
+          `;
+          tBody.appendChild(tr);
+        }
+      }
+    }
+
+    const exBody = $('#stats-top-ex-tbody');
+    const exEmpty = $('#stats-top-ex-empty');
+    if (exBody && exEmpty) {
+      exBody.innerHTML = '';
+      const rows = Array.isArray(data.topExcludedRules) ? data.topExcludedRules : [];
+      if (!rows.length) {
+        exEmpty.hidden = false;
+      } else {
+        exEmpty.hidden = true;
+        for (const r of rows) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="mono">${B.esc(r.ruleLabel)}</td>
+            <td class="mono">${r.count}</td>
+            <td class="mono">${r.lastAt ? B.esc(B.fmtWib(r.lastAt)) : '—'}</td>
+          `;
+          exBody.appendChild(tr);
+        }
+      }
+    }
+  }
+
+  async function fetchTriageStats(silent = false) {
+    try {
+      const res = await B.apiFetch('/api/triage/stats');
+      if (res?.ok) renderTriageStats(res);
+    } catch (err) {
+      if (!silent) B.toast({ type: 'error', title: 'Gagal memuat statistik triage', body: err.message });
+    }
+  }
+
   const DEFAULT_OLLAMA_PARAMS = {
     temperature: 0.1,
     numCtx: 12288,
@@ -1404,7 +1508,7 @@
           </label>
           <label class="wzh-ex-lock-field">
             <span class="field-label">Pola Utama</span>
-            <input type="text" class="exm-pattern mono" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin" spellcheck="false" />
+            <input type="text" class="exm-pattern mono" value="${B.esc(rule.pattern || '')}" placeholder="/app/item/*/status atau *.log" spellcheck="false" />
           </label>
           <button type="button" class="btn danger btn-xs exm-del">Hapus</button>
         </div>
@@ -1419,15 +1523,15 @@
           </label>
           <label class="wzh-ex-lock-field">
             <span class="field-label">Kunci Source IP (AND)</span>
-            <input type="text" class="exm-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="mis. 123.253.78.156" spellcheck="false" />
+            <input type="text" class="exm-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="mis. 192.0.2.10" spellcheck="false" />
           </label>
           <label class="wzh-ex-lock-field">
             <span class="field-label">Kunci User-Agent (AND)</span>
-            <input type="text" class="exm-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="mis. MoodleMobile" spellcheck="false" />
+            <input type="text" class="exm-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="mis. MobileApp / HealthCheck" spellcheck="false" />
           </label>
           <label class="wzh-ex-lock-field">
             <span class="field-label">Kunci Referer (AND)</span>
-            <input type="text" class="exm-referer mono" value="${B.esc(rule.referer || '')}" placeholder="mis. indigoes.ikmi.ac.id" spellcheck="false" />
+            <input type="text" class="exm-referer mono" value="${B.esc(rule.referer || '')}" placeholder="mis. portal.example.com" spellcheck="false" />
           </label>
           <label class="wzh-ex-lock-field">
             <span class="field-label">Keterangan</span>
@@ -2464,6 +2568,7 @@
           triageState.snapshot = JSON.parse(ev.data);
           renderTriageView();
           refreshInspectorIfOpen();
+          if (!$('#view-triage-stats')?.hidden) fetchTriageStats(true);
         } catch {}
       });
       es.addEventListener('batch24h', (ev) => {
@@ -2494,6 +2599,8 @@
     $('#tab-live-feed')?.addEventListener('click', () => B.switchView('live-feed'));
     $('#tab-triage-history')?.addEventListener('click', () => B.switchView('triage-history'));
     $('#tab-triage-exclusions')?.addEventListener('click', () => B.switchView('triage-exclusions'));
+    $('#tab-triage-stats')?.addEventListener('click', () => B.switchView('triage-stats'));
+    $('#btn-stats-refresh')?.addEventListener('click', () => fetchTriageStats(false));
 
     $('#set-mode-workspace')?.addEventListener('click', () => switchSettingsSubTab('workspace'));
     $('#set-mode-wazuh')?.addEventListener('click', () => switchSettingsSubTab('wazuh'));
@@ -2530,7 +2637,7 @@
     });
     $('#btn-reset-prompt')?.addEventListener('click', () => {
       if ($('#trg-system-prompt')) {
-        $('#trg-system-prompt').value = 'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.\nAnalisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.\n\nSkala Severity Wazuh Resmi (WAJIB dipatuhi dalam reasoning):\n- Level 0–6: Low\n- Level 7–11: Medium (contoh: Rule Level 10 adalah Medium, BUKAN High atau Critical)\n- Level 12–14: High\n- Level 15+: Critical\n\nAturan Klasifikasi:\n1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.\n2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).\n3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /mhs/nim, kesalahan input user biasa, atau crawler/healthcheck internal).\n\nAturan Pengelompokan:\n- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.\n- Gabungkan kandidat yang merupakan kampanye serangan yang sama ke dalam satu insiden walaupun menyasar beberapa agent berbeda di dalam tenant ini.\nKeluarkan output HANYA dalam format JSON valid sesuai skema yang diminta.';
+        $('#trg-system-prompt').value = 'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.\nAnalisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.\n\nSkala Severity Wazuh Resmi (WAJIB dipatuhi dalam reasoning):\n- Level 0–6: Low\n- Level 7–11: Medium (contoh: Rule Level 10 adalah Medium, BUKAN High atau Critical)\n- Level 12–14: High\n- Level 15+: Critical\n\nAturan Klasifikasi:\n1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.\n2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).\n3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /api/v1/items, kesalahan input user biasa, atau crawler/healthcheck internal).\n\nAturan Pengelompokan:\n- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.\n- Gabungkan kandidat yang merupakan kampanye serangan yang sama ke dalam satu insiden walaupun menyasar beberapa agent berbeda di dalam tenant ini.\nKeluarkan output HANYA dalam format JSON valid sesuai skema yang diminta.';
       }
     });
 
@@ -3183,6 +3290,8 @@
       fetchTriageHistory(false);
     } else if (view === 'triage-exclusions') {
       fetchExclusionRules(false);
+    } else if (view === 'triage-stats') {
+      fetchTriageStats(false);
     } else if (view === 'triage-inspector') {
       renderInspectorView();
     } else if (view === 'settings' && (triageState.settingsTab === 'wazuh' || triageState.settingsTab === 'ollama')) {

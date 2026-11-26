@@ -1258,6 +1258,23 @@ async function main() {
     assert.equal(byId.get('ikmi-apicms-gw').status_code, 'excluded');
     assert.notEqual(byId.get('ikmi-apicms-ext').status_code, 'excluded', 'External IP on apicms must NOT match gateway IP lock');
 
+    // Poll one excluded hit so excludedAlertMap & topExcludedRules are populated for stats verification
+    const statPoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:26:05.000Z', to: '2029-11-26T10:26:25.000Z', size: 50 },
+    });
+    assert.equal(statPoll.status, 200);
+
+    const statsRes = await httpJson(`${baseUrl}/api/triage/stats`);
+    assert.equal(statsRes.status, 200);
+    assert.equal(statsRes.json.ok, true);
+    assert.ok(statsRes.json.summary.aiTriagedAlerts >= 1);
+    assert.ok(statsRes.json.summary.casesCreated >= 1);
+    assert.ok(statsRes.json.summary.caseAlerts >= 1);
+    assert.ok(statsRes.json.summary.excludedAlerts >= 1);
+    assert.ok(Array.isArray(statsRes.json.perTenant));
+    assert.ok(Array.isArray(statsRes.json.topExcludedRules) && statsRes.json.topExcludedRules.length >= 1);
+
     console.log('ALL_TRIAGE_TESTS_PASSED (20/20)');
   } finally {
     await new Promise((r) => server.close(r));

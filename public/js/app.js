@@ -3541,13 +3541,14 @@
     else if (state.view === 'live-feed') heading.textContent = 'Realtime Wazuh Feed (1:1)';
     else if (state.view === 'triage-history') heading.textContent = 'Audit Case Triage';
     else if (state.view === 'triage-exclusions') heading.textContent = 'Daftar Exclusion Rules';
+    else if (state.view === 'triage-stats') heading.textContent = 'Statistik AI Triage';
     else if (state.view === 'triage-inspector') heading.textContent = 'Inspector Alert (Wazuh View)';
     else if (state.view === 'settings') heading.textContent = 'Pengaturan';
     else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Repeating' : 'Reporting';
   }
 
   function switchView(view) {
-    const allowed = ['queue', 'history', 'approvals', 'settings', 'triage', 'triage-24h', 'live-feed', 'triage-history', 'triage-exclusions', 'triage-inspector'];
+    const allowed = ['queue', 'history', 'approvals', 'settings', 'triage', 'triage-24h', 'live-feed', 'triage-history', 'triage-exclusions', 'triage-stats', 'triage-inspector'];
     state.view = allowed.includes(view) ? view : 'queue';
     const isQueue = state.view === 'queue';
     const isHist = state.view === 'history';
@@ -3557,6 +3558,7 @@
     const isLive = state.view === 'live-feed';
     const isTrgHist = state.view === 'triage-history';
     const isTrgEx = state.view === 'triage-exclusions';
+    const isTrgStats = state.view === 'triage-stats';
     const isTrgInsp = state.view === 'triage-inspector';
     const isSettings = state.view === 'settings';
 
@@ -3568,6 +3570,7 @@
     if ($('#view-live-feed')) $('#view-live-feed').hidden = !isLive;
     if ($('#view-triage-history')) $('#view-triage-history').hidden = !isTrgHist;
     if ($('#view-triage-exclusions')) $('#view-triage-exclusions').hidden = !isTrgEx;
+    if ($('#view-triage-stats')) $('#view-triage-stats').hidden = !isTrgStats;
     if ($('#view-triage-inspector')) $('#view-triage-inspector').hidden = !isTrgInsp;
     $('#view-settings').hidden = !isSettings;
 
@@ -3587,6 +3590,8 @@
     $('#tab-triage-history')?.setAttribute('aria-selected', String(isTrgHist));
     $('#tab-triage-exclusions')?.classList.toggle('active', isTrgEx);
     $('#tab-triage-exclusions')?.setAttribute('aria-selected', String(isTrgEx));
+    $('#tab-triage-stats')?.classList.toggle('active', isTrgStats);
+    $('#tab-triage-stats')?.setAttribute('aria-selected', String(isTrgStats));
     $('#tab-settings').classList.toggle('active', isSettings);
     $('#tab-settings').setAttribute('aria-selected', String(isSettings));
 

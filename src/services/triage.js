@@ -96,7 +96,7 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Aturan Klasifikasi:',
   '1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.',
   '2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).',
-  '3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /mhs/nim, kesalahan input user biasa, atau crawler/healthcheck internal).',
+  '3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /api/v1/items, kesalahan input user biasa, atau crawler/healthcheck internal).',
   '',
   'Aturan Pengelompokan:',
   '- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.',
@@ -106,7 +106,7 @@ const DEFAULT_SYSTEM_PROMPT = [
 
 const DEFAULT_EXCLUSION_RULES = [
   { id: 'ex-path-login', target: 'path', mode: 'contains', pattern: '/login.php', enabled: true, source: 'default', note: 'Login page aplikasi' },
-  { id: 'ex-path-mhs', target: 'path', mode: 'contains', pattern: '/mhs/nim', enabled: true, source: 'default', note: 'Endpoint akademik kampus' },
+  { id: 'ex-path-health', target: 'path', mode: 'contains', pattern: '/healthz', enabled: true, source: 'default', note: 'Endpoint healthcheck' },
   { id: 'ex-path-favicon', target: 'path', mode: 'contains', pattern: '/favicon.ico', enabled: true, source: 'default', note: 'Favicon browser' },
   { id: 'ex-path-assets', target: 'path', mode: 'starts_with', pattern: '/assets/', enabled: true, source: 'default', note: 'Static assets' },
   { id: 'ex-log-healthcheck', target: 'full_log', mode: 'contains', pattern: 'HealthCheck', enabled: true, source: 'default', note: 'Health check internal' },
@@ -1342,6 +1342,135 @@ function createTriageEngine(options = {}) {
     };
   }
 
+  function getTriageStats() {
+    const excludedMap = state.excludedAlertMap && typeof state.excludedAlertMap === 'object' ? state.excludedAlertMap : {};
+    const excludedSet = new Set(Object.keys(excludedMap));
+    const activeAlertIds = new Set();
+    const verdicts = {
+      TRUE_POSITIVE: { groups: 0, alerts: 0 },
+      NEEDS_REVIEW: { groups: 0, alerts: 0 },
+      FALSE_POSITIVE: { groups: 0, alerts: 0 },
+    };
+
+    const tenantMap = new Map();
+    const ensureTenantRow = (rawTenant) => {
+      const key = normalizeTenantScope(rawTenant) || 'unassigned';
+      if (!tenantMap.has(key)) {
+        tenantMap.set(key, {
+          tenant: key,
+          activeGroups: 0,
+          activeAlerts: 0,
+          tpAlerts: 0,
+          reviewAlerts: 0,
+          fpAlerts: 0,
+          casesCreated: 0,
+          caseAlerts: 0,
+          exclusionRules: 0,
+        });
+      }
+      return tenantMap.get(key);
+    };
+
+    for (const grp of state.groups || []) {
+      const cnt = Number(grp.alert_count || grp.alerts?.length || 0);
+      for (const al of grp.alerts || []) {
+        if (al?.alert_id) activeAlertIds.add(al.alert_id);
+      }
+      const v = VALID_VERDICTS.includes(grp.verdict) ? grp.verdict : 'NEEDS_REVIEW';
+      verdicts[v].groups++;
+      verdicts[v].alerts += cnt;
+
+      const tRow = ensureTenantRow(grp.tenant_mapped);
+      tRow.activeGroups++;
+      tRow.activeAlerts += cnt;
+      if (v === 'TRUE_POSITIVE') tRow.tpAlerts += cnt;
+      else if (v === 'FALSE_POSITIVE') tRow.fpAlerts += cnt;
+      else tRow.reviewAlerts += cnt;
+    }
+
+    const historyAlertIds = new Set();
+    let historyAlertSum = 0;
+    for (const h of caseHistory || []) {
+      const ids = Array.isArray(h?.wazuh_alert_ids) ? h.wazuh_alert_ids : [];
+      for (const id of ids) {
+        if (id) historyAlertIds.add(String(id));
+      }
+      const hAlerts = Number(h?.alert_count || ids.length || 0);
+      historyAlertSum += hAlerts;
+      if (h?.tenant) {
+        const tRow = ensureTenantRow(h.tenant);
+        tRow.casesCreated++;
+        tRow.caseAlerts += hAlerts;
+      }
+    }
+
+    for (const rule of config.exclusionRules || []) {
+      const tSlug = normalizeTenantScope(rule?.tenant);
+      if (tSlug) {
+        ensureTenantRow(tSlug).exclusionRules++;
+      }
+    }
+
+    const caseAlertSet = new Set([...(state.caseCreatedAlertIds || []).map(String), ...historyAlertIds]);
+    const dismissedSet = new Set((state.dismissedAlertIds || []).map(String));
+    const aiTriagedSet = new Set();
+    for (const id of [
+      ...(state.processedAlertIds || []),
+      ...activeAlertIds,
+      ...dismissedSet,
+      ...caseAlertSet,
+    ]) {
+      const s = String(id || '');
+      if (s && !excludedSet.has(s)) aiTriagedSet.add(s);
+    }
+
+    const activeQueueAlerts = verdicts.TRUE_POSITIVE.alerts + verdicts.NEEDS_REVIEW.alerts + verdicts.FALSE_POSITIVE.alerts;
+    const caseAlerts = Math.max(caseAlertSet.size, historyAlertSum);
+
+    const ruleHits = new Map();
+    for (const entry of Object.values(excludedMap)) {
+      const label = String(entry?.ruleLabel || '').trim() || '(Tanpa label)';
+      const cur = ruleHits.get(label) || { ruleLabel: label, count: 0, lastAt: null };
+      cur.count++;
+      if (entry?.at && (!cur.lastAt || String(entry.at) > cur.lastAt)) {
+        cur.lastAt = String(entry.at);
+      }
+      ruleHits.set(label, cur);
+    }
+
+    const topExcludedRules = [...ruleHits.values()]
+      .sort((a, b) => b.count - a.count || String(b.lastAt || '').localeCompare(String(a.lastAt || '')))
+      .slice(0, 10);
+
+    const perTenant = [...tenantMap.values()].sort((a, b) => {
+      const scoreA = a.activeAlerts + a.caseAlerts + a.exclusionRules;
+      const scoreB = b.activeAlerts + b.caseAlerts + b.exclusionRules;
+      return scoreB - scoreA || a.tenant.localeCompare(b.tenant);
+    });
+
+    return {
+      ok: true,
+      summary: {
+        totalHandledAlerts: aiTriagedSet.size + excludedSet.size,
+        aiTriagedAlerts: aiTriagedSet.size,
+        excludedAlerts: excludedSet.size,
+        caseAlerts,
+        casesCreated: (caseHistory || []).length,
+        dismissedAlerts: dismissedSet.size,
+        activeQueueGroups: (state.groups || []).length,
+        activeQueueAlerts,
+        activeExclusionRules: config.exclusionRules.filter((r) => r.enabled !== false).length,
+        totalExclusionRules: config.exclusionRules.length,
+      },
+      verdicts,
+      perTenant,
+      topExcludedRules,
+      workerEnabled: Boolean(config.workerEnabled),
+      workerStatus: buildWorkerStatusSnapshot(),
+      watermarkTimestamp: state.watermarkTimestamp,
+    };
+  }
+
   function getBatch24hSnapshot(filters = {}) {
     const items = filterAndSortGroups(batch24h.groups, filters);
     const tenantsSet = new Set(batch24h.groups.map((g) => g.tenant_mapped).filter(Boolean));
@@ -1605,7 +1734,7 @@ function createTriageEngine(options = {}) {
     const promptLines = [
       `Tenant target: "${tenant}". Semua kandidat di bawah HANYA milik tenant "${tenant}".`,
       'Skala Severity Wazuh (WAJIB): Level 0-6 = Low, Level 7-11 = Medium (contoh: rule level 10 adalah Medium, BUKAN Critical/High), Level 12-14 = High, Level 15+ = Critical.',
-      'Tugas: Klasifikasikan tiap candidate_id (TRUE_POSITIVE | NEEDS_REVIEW | FALSE_POSITIVE) dan berikan group_key semantik agar kampanye serangan sejenis (mis. scanning /.env lintas agent) bisa menyatu, sementara trafik legit (mis. /login.php, /mhs/nim) terpisah walau rule_id sama.',
+      'Tugas: Klasifikasikan tiap candidate_id (TRUE_POSITIVE | NEEDS_REVIEW | FALSE_POSITIVE) dan berikan group_key semantik agar kampanye serangan sejenis (mis. scanning /.env lintas agent) bisa menyatu, sementara trafik legit (mis. /login.php, /api/v1/items) terpisah walau rule_id sama.',
       'Buat ai_reasoning ringkas (maksimal 1-2 kalimat singkat & padat) dan pastikan JSON tertutup lengkap.',
       'Format JSON WAJIB:',
       '{"results":[{"candidate_id":"...","verdict":"TRUE_POSITIVE|NEEDS_REVIEW|FALSE_POSITIVE","group_key":"slug-singkat","incident_title":"Judul insiden ringkas","ai_reasoning":"Alasan teknis singkat"}]}',
@@ -2988,7 +3117,7 @@ function createTriageEngine(options = {}) {
       'Aturan KEAMANAN PENGUNCIAN WAJIB:',
       '1. Kunci `tenant` ke tenant asal insiden (jangan kosong/global kecuali aturan memang lintas tenant).',
       '2. Kunci `ruleIds` HANYA ke rule berbasis frekuensi (mis. 31151, 31153, 31154). DILARANG KERAS mengecualikan rule signature serangan (31103 SQLi, 31104 Path Traversal, 31105 XSS, 31106 Command Injection, 31109, 31110).',
-      '3. Untuk path sensitif seperti /cms/login, /webservice/rest/server.php, /lib/ajax/service*, /apicms*, atau /mod/quiz/edit.php, WAJIB isi syarat pengunci AND (`httpStatuses`, `srcIps` gateway internal, `userAgent` mis. MoodleMobile, atau `referer` domain internal) dan gunakan * untuk ID/NIM/timestamp dinamis.',
+      '3. Untuk path sensitif seperti endpoint autentikasi (/login), REST/RPC API (/api/*, /webservice/*), atau endpoint form dinamis, WAJIB isi syarat pengunci AND (`httpStatuses`, `srcIps` gateway internal, `userAgent` klien resmi, atau `referer` domain internal) dan gunakan * untuk ID/parameter dinamis.',
       '4. LARANGAN KERAS: JANGAN buat pola terlalu umum seperti "/", "/*", "/service/", "/service/*", atau "/api/" tanpa syarat pengunci.',
       'Mode pencocokan: wildcard (pakai *), contains, starts_with, regex. Keluarkan JSON valid sesuai schema dengan reasoning singkat dalam Bahasa Indonesia.',
     ].join('\n');
@@ -3619,6 +3748,7 @@ function createTriageEngine(options = {}) {
     resolveTenant,
     pollOnce,
     getQueueSnapshot,
+    getTriageStats,
     getLiveFeed,
     subscribeSse,
     mergeGroups,

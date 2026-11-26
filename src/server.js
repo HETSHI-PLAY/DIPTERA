@@ -2786,6 +2786,9 @@ function createServer(options = {}) {
           });
           return sendJson(res, method, 200, snap);
         }
+        if (method === 'GET' && pathname === '/api/triage/stats') {
+          return sendJson(res, method, 200, triage.getTriageStats());
+        }
         if (method === 'GET' && pathname === '/api/triage/live') {
           const live = await triage.getLiveFeed({
             range: urlObj.searchParams.get('range') || '',
