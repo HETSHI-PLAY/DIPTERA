@@ -14,14 +14,30 @@ backups
 *.log
 *.key
 *.pem
+*.crt
+*.p12
+*.pfx
 *.tar
 *.tar.gz
 npm-debug.log*
 .DS_Store
+credentials*.json
+*credential*.json
+*secret*.json
+*token*.json
+server-config.json
+triage-state.json
+case-history.json
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.prod.yml
 Alpha Reporter*.json
+Charlie Reporter*.json
 *.workflow.json
 finding.md
 update.md
+Dokumentasi Diptera.md
+graphify-out
 .agents
 .agent
 skills-lock.json

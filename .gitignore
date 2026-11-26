@@ -11,9 +11,29 @@
 credentials*.json
 *credential*.json
 *secret*.json
+.envrc
+*.cer
+*.der
+*.jks
+*.keystore
+*.kdbx
+id_rsa*
+id_ed25519*
+*token*.json
+*auth*.json
+service-account*.json
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.prod.yml
 
 # Local Runtime Data, Database & Backups
 data/
+server-config.json
+triage-state.json
+case-history.json
+counters.json
+approvals.json
+rejections.json
 pgdata/
 postgres-data/
 backups/
@@ -43,9 +63,14 @@ coverage/
 # Local n8n Workflows & Internal Docs
 Alpha Reporter v2 (1).json
 Alpha Reporter*.json
+Charlie Reporter*.json
 *.workflow.json
 update.md
 finding.md
+Dokumentasi Diptera.md
+
+# Knowledge Graph Outputs (graphify)
+graphify-out/
 
 # AI Agent Skills, Lockfiles & Scratch Artifacts
 .agents/

@@ -8,8 +8,8 @@
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261124c" />
-  <link rel="stylesheet" href="styles.css?v=20261124c" />
-  <link rel="stylesheet" href="tenants.css?v=20261124b" />
+  <link rel="stylesheet" href="styles.css?v=20261126a" />
+  <link rel="stylesheet" href="tenants.css?v=20261126a" />
 </head>
 
 <body>
@@ -127,6 +127,26 @@
       <hr class="sidebar-divider" />
 
       <div class="sidebar-section">
+        <div class="sidebar-heading sidebar-heading-accent">TRIAGE</div>
+        <div class="sidebar-nav">
+          <button class="sidebar-item" id="tab-triage" type="button" role="tab" aria-selected="false" aria-controls="view-triage">
+            <span>AI Triage</span>
+            <span class="tab-count" id="tab-triage-count">0</span>
+          </button>
+          <button class="sidebar-item" id="tab-live-feed" type="button" role="tab" aria-selected="false" aria-controls="view-live-feed">
+            <span>Live Wazuh</span>
+            <span class="tab-count" id="tab-live-count">0</span>
+          </button>
+          <button class="sidebar-item" id="tab-triage-history" type="button" role="tab" aria-selected="false" aria-controls="view-triage-history">
+            <span>Audit Triage</span>
+            <span class="tab-count" id="tab-triage-history-count">0</span>
+          </button>
+        </div>
+      </div>
+
+      <hr class="sidebar-divider" />
+
+      <div class="sidebar-section">
         <div class="sidebar-heading">SYSTEM</div>
         <div class="sidebar-nav">
           <button class="sidebar-item" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="view-settings">
@@ -176,7 +196,12 @@
 
         <!-- VIEW 4: Pengaturan Workspace & Integrasi -->
         <section id="view-settings" class="settings-view" role="tabpanel" aria-labelledby="tab-settings" hidden>
-          <div class="settings" id="settings-panel">
+          <div class="settings-subnav" role="group" aria-label="Kategori Pengaturan">
+            <button class="ws-tab-btn active" id="set-mode-workspace" type="button" aria-pressed="true">Pengaturan Workspace (ASOC / SOC)</button>
+            <button class="ws-tab-btn" id="set-mode-triage" type="button" aria-pressed="false">Wazuh Indexer &amp; AI Triage</button>
+          </div>
+
+          <div class="settings" id="settings-workspace-panel">
             <div class="settings-head">
               <div>
                 <h2 class="settings-title" id="settings-title">Pengaturan Workspace ASOC</h2>
@@ -305,6 +330,135 @@
               <button class="btn ghost" id="btn-reset-settings" type="button">Reset default workspace ini</button>
               <span class="spacer"></span>
               <button class="btn ghost danger" id="btn-clear-all" type="button">Hapus semua kartu ASOC</button>
+            </div>
+          </div>
+
+          <div class="settings" id="settings-triage-panel" hidden>
+            <div class="settings-head">
+              <div>
+                <h2 class="settings-title">Konfigurasi Wazuh Indexer, Ollama &amp; Exclusion Rules</h2>
+                <p class="field-hint">Tersimpan aman di server (data/server-config.json). Password tidak pernah dikirim kembali ke browser.</p>
+              </div>
+              <div class="settings-head-actions">
+                <label class="check">
+                  <input type="checkbox" id="trg-worker-enabled" />
+                  <span>Aktifkan polling latar belakang otomatis</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-grid">
+              <label class="field">
+                <span class="field-label">Wazuh Indexer URL</span>
+                <input type="text" id="trg-wazuh-url" placeholder="https://192.168.1.50:9200" spellcheck="false" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Index Pattern</span>
+                <input type="text" id="trg-wazuh-index" placeholder="wazuh-alerts-*" spellcheck="false" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Username Read-Only Wazuh</span>
+                <input type="text" id="trg-wazuh-user" placeholder="kibanaro / soc_reader" spellcheck="false" />
+              </label>
+
+              <label class="field">
+                <span class="field-label">Password Read-Only Wazuh</span>
+                <input type="password" id="trg-wazuh-pass" placeholder="Masukkan password read-only" autocomplete="new-password" />
+              </label>
+
+              <div class="field">
+                <span class="field-label">Preset Severity / Rule Level</span>
+                <select id="trg-sev-preset">
+                  <option value="medium_critical">Medium – Critical (Level &gt;= 7, Default)</option>
+                  <option value="high_critical">High – Critical (Level &gt;= 12)</option>
+                  <option value="custom">Custom Range</option>
+                </select>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-min-level">Min Level:</label>
+                  <input type="number" id="trg-min-level" class="trg-num-sm" min="0" max="15" step="1" />
+                  <label class="field-hint" for="trg-max-level">Max Level:</label>
+                  <input type="number" id="trg-max-level" class="trg-num-sm" min="1" max="20" step="1" />
+                </div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Interval &amp; TLS</span>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-poll-min">Polling Worker (menit):</label>
+                  <input type="number" id="trg-poll-min" class="trg-num-sm" min="1" max="120" step="1" />
+                  <label class="field-hint" for="trg-live-sec">Live Refresh (detik):</label>
+                  <input type="number" id="trg-live-sec" class="trg-num-sm" min="3" max="300" step="1" />
+                </div>
+                <label class="check">
+                  <input type="checkbox" id="trg-wazuh-insecure" />
+                  <span>Allow self-signed certificates (TLS internal Wazuh)</span>
+                </label>
+                <div class="settings-inline">
+                  <button type="button" id="btn-test-wazuh" class="btn ghost btn-xs">Test Koneksi Wazuh</button>
+                </div>
+                <div id="trg-wazuh-test-msg" class="um-msg" hidden></div>
+              </div>
+
+              <label class="field">
+                <span class="field-label">Ollama Base URL</span>
+                <input type="text" id="trg-ollama-url" placeholder="http://localhost:11434" spellcheck="false" />
+              </label>
+
+              <div class="field">
+                <span class="field-label">Model Ollama &amp; Temperature</span>
+                <div class="settings-inline">
+                  <input type="text" id="trg-ollama-model" class="trg-model-inp" placeholder="hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0" spellcheck="false" />
+                  <input type="number" id="trg-ollama-temp" class="trg-num-sm" min="0" max="2" step="0.05" title="Temperature" />
+                </div>
+                <div class="settings-inline">
+                  <button type="button" id="btn-test-ollama" class="btn ghost btn-xs">Test Koneksi Ollama</button>
+                </div>
+                <div id="trg-ollama-test-msg" class="um-msg" hidden></div>
+              </div>
+
+              <label class="field field-full">
+                <span class="field-label">Tenant Mapping Rules (JSON: agent.name / wildcard -&gt; tenant)</span>
+                <textarea id="trg-tenant-mapping" rows="3" spellcheck="false" placeholder='{"pradita-*": "praditauniversity", "sebatik": "instikibali"}'></textarea>
+              </label>
+
+              <div class="field field-full">
+                <div class="settings-inline">
+                  <label class="field-label" for="trg-system-prompt">Editable AI Triage System Prompt</label>
+                  <span class="spacer"></span>
+                  <button type="button" id="btn-reset-prompt" class="btn ghost btn-xs">Reset Default Prompt</button>
+                </div>
+                <textarea id="trg-system-prompt" rows="6" spellcheck="false"></textarea>
+              </div>
+
+              <div class="field field-full">
+                <div class="settings-inline">
+                  <span class="field-label">Custom Exclusion Rules (Whitelist Path &amp; Full Log — Hemat VRAM GPU)</span>
+                  <span class="spacer"></span>
+                  <button type="button" id="btn-add-exclusion" class="btn ghost btn-xs">+ Tambah Aturan</button>
+                </div>
+                <div class="users-table-wrap">
+                  <table class="users-table">
+                    <thead>
+                      <tr>
+                        <th>Aktif</th>
+                        <th>Target</th>
+                        <th>Mode</th>
+                        <th>Pola</th>
+                        <th>Keterangan</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody id="trg-exclusions-tbody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-actions">
+              <button class="btn primary" id="btn-save-triage-cfg" type="button">Simpan Konfigurasi Triage</button>
+              <button class="btn ghost" id="btn-close-triage-cfg" type="button">Tutup ke AI Triage</button>
             </div>
           </div>
         </section>
@@ -550,6 +704,150 @@
             <p id="approvals-empty-desc">Permintaan approval dari workflow n8n akan terkumpul di sini.</p>
           </div>
         </section>
+
+        <!-- VIEW 5: AI Triage Queue -->
+        <section id="view-triage" class="triage-view" role="tabpanel" aria-labelledby="tab-triage" hidden>
+          <div class="triage-status-bar">
+            <span class="sync-pill offline" id="trg-worker-pill">Worker Pause</span>
+            <span class="field-hint" id="trg-watermark-info">Watermark antrean: Awal</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn accent btn-sm" id="btn-triage-poll-now">Tarik Sekarang</button>
+            <button type="button" class="btn accent btn-sm" id="btn-triage-worker-toggle">Start Worker</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-triage-dismiss-fp">Hapus Semua False Positive</button>
+            <button type="button" class="btn danger btn-sm" id="btn-triage-reset">Bersihkan &amp; Reset Antrean</button>
+          </div>
+
+          <div class="approval-toolbar">
+            <div class="appr-status-tabs" role="group" aria-label="Filter verdict AI triage">
+              <button class="appr-status-btn trg-verdict-btn active" type="button" data-verdict="TRUE_POSITIVE" aria-pressed="true">
+                True Positive <span class="tab-count" id="trg-count-tp">0</span>
+              </button>
+              <button class="appr-status-btn trg-verdict-btn" type="button" data-verdict="NEEDS_REVIEW" aria-pressed="false">
+                Perlu Ditinjau <span class="tab-count" id="trg-count-review">0</span>
+              </button>
+              <button class="appr-status-btn trg-verdict-btn" type="button" data-verdict="FALSE_POSITIVE" aria-pressed="false">
+                False Positive <span class="tab-count" id="trg-count-fp">0</span>
+              </button>
+              <button class="appr-status-btn trg-verdict-btn" type="button" data-verdict="ALL" aria-pressed="false">
+                Semua <span class="tab-count" id="trg-count-all">0</span>
+              </button>
+            </div>
+
+            <div class="approval-filters">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <input type="search" id="trg-search" placeholder="Cari judul insiden, IP, agent, Rule ID, atau Alert ID…" />
+              </div>
+              <select id="trg-filter-tenant" aria-label="Filter tenant AI triage">
+                <option value="">Semua Tenant</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="trg-merge-bar" class="triage-merge-bar" hidden>
+            <span id="trg-merge-msg" class="field-msg"></span>
+            <button type="button" class="btn primary btn-sm" id="btn-triage-merge">Gabungkan ke 1 Grup</button>
+          </div>
+
+          <div id="triage-groups-list" class="approvals-list" aria-live="polite"></div>
+
+          <div id="triage-empty" class="empty" hidden>
+            <h2>Belum ada grup alert di antrean triage</h2>
+            <p>Konfigurasikan Wazuh Indexer &amp; Ollama di Pengaturan lalu tekan Tarik Sekarang atau aktifkan Worker.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 6: Realtime Wazuh Feed (1:1 Parity) -->
+        <section id="view-live-feed" class="live-feed-view" role="tabpanel" aria-labelledby="tab-live-feed" hidden>
+          <div class="triage-status-bar">
+            <span class="sync-pill" id="live-parity-pill">Belum dimuat</span>
+            <select id="live-scope-select" aria-label="Rentang waktu Live Feed">
+              <option value="watermark">Sejak Watermark Triage</option>
+              <option value="24h">24 Jam Terakhir</option>
+            </select>
+            <label class="check">
+              <input type="checkbox" id="live-auto-refresh" checked />
+              <span>Auto-refresh</span>
+            </label>
+            <span class="spacer"></span>
+            <button type="button" class="btn ghost btn-sm" id="btn-live-refresh">Segarkan Live</button>
+          </div>
+
+          <div class="history-toolbar">
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input type="search" id="live-search" placeholder="Cari Alert ID, Rule ID, path, IP sumber, atau full_log…" />
+            </div>
+            <select id="live-filter-tenant" aria-label="Filter tenant live feed">
+              <option value="">Semua Tenant</option>
+            </select>
+            <select id="live-filter-status" aria-label="Filter status Diptera">
+              <option value="">Semua Status</option>
+              <option value="queued_tp">Queued (True Positive)</option>
+              <option value="queued_review">Queued (Needs Review)</option>
+              <option value="queued_fp">Queued (False Positive)</option>
+              <option value="excluded">Excluded (Whitelist)</option>
+              <option value="case_created">Case Created</option>
+              <option value="dismissed">Dismissed</option>
+              <option value="pending">Belum Di-triage</option>
+            </select>
+          </div>
+
+          <div class="history-table-wrap">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>Waktu (WIB)</th>
+                  <th>Wazuh Alert ID</th>
+                  <th>Tenant</th>
+                  <th>Agent</th>
+                  <th>Rule</th>
+                  <th>Deskripsi &amp; Path</th>
+                  <th>Severity</th>
+                  <th>Source IP</th>
+                  <th>Status Diptera</th>
+                  <th class="col-actions">Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="live-feed-tbody"></tbody>
+            </table>
+          </div>
+
+          <div id="live-feed-empty" class="empty" hidden>
+            <h2>Tidak ada event dari Wazuh Indexer</h2>
+            <p>Pastikan koneksi Wazuh Indexer terkonfigurasi atau ubah rentang waktu ke 24 Jam Terakhir.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 7: Case Audit History & Wazuh ID Tracker -->
+        <section id="view-triage-history" class="triage-view" role="tabpanel" aria-labelledby="tab-triage-history" hidden>
+          <div class="history-toolbar">
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input type="search" id="trghist-search" placeholder="Cari Wazuh Alert ID, IRIS Case ID, Tenant, IP sumber, atau Agent…" />
+            </div>
+            <select id="trghist-filter-tenant" aria-label="Filter tenant audit triage">
+              <option value="">Semua Tenant</option>
+            </select>
+            <button type="button" class="btn ghost btn-sm" id="btn-trghist-refresh">Segarkan</button>
+          </div>
+
+          <div id="triage-history-list" class="approvals-list" aria-live="polite"></div>
+
+          <div id="triage-history-empty" class="empty" hidden>
+            <h2>Belum ada riwayat case dari AI Triage</h2>
+            <p>Setiap case yang dibuat lewat Buat Case atau Kirim ke Form akan mencatat daftar Wazuh Alert ID di sini.</p>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -666,12 +964,31 @@
     </div>
   </div>
 
+  <div id="raw-json-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="raw-json-title">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2 id="raw-json-title">Raw Wazuh Alert JSON</h2>
+          <p class="field-hint">Dokumen _source asli dari Wazuh Indexer tanpa modifikasi.</p>
+        </div>
+        <div class="settings-inline">
+          <button type="button" class="btn ghost btn-sm" id="btn-copy-raw-json">Salin JSON</button>
+          <button type="button" class="btn ghost btn-sm" id="btn-close-raw-json">Tutup</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <pre id="raw-json-pre" class="md-pre"></pre>
+      </div>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="config.js?v=20261124b"></script>
-  <script src="numbering.js?v=20261124b"></script>
-  <script src="extract.js?v=20261124b"></script>
-  <script src="app.js?v=20261124d"></script>
+  <script src="config.js?v=20261126a"></script>
+  <script src="numbering.js?v=20261126a"></script>
+  <script src="extract.js?v=20261126a"></script>
+  <script src="app.js?v=20261126a"></script>
+  <script src="triage-ui.js?v=20261126a"></script>
 </body>
 
 </html>

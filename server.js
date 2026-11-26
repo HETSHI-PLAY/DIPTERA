@@ -17,6 +17,7 @@ const crypto = require('node:crypto');
 const numbering = require('./numbering.js');
 const db = require('./db.js');
 const auth = require('./auth.js');
+const { createTriageEngine } = require('./triage.js');
 
 const ROOT = __dirname;
 
@@ -57,7 +58,7 @@ const MAX_HISTORY = 1000;
 const MAX_APPROVALS = 1000;
 const MAX_REJECTIONS = 500;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
-const DEFAULT_APPROVAL_RESUME_TIMEOUT_MS = 15000;
+const DEFAULT_APPROVAL_RESUME_TIMEOUT_MS = 45000;
 const WORKSPACES = ['asoc', 'soc'];
 
 const APP_FILES = {
@@ -66,6 +67,7 @@ const APP_FILES = {
   '/styles.css': 'styles.css',
   '/tenants.css': 'tenants.css',
   '/app.js': 'app.js',
+  '/triage-ui.js': 'triage-ui.js',
   '/extract.js': 'extract.js',
   '/numbering.js': 'numbering.js',
   '/config.js': 'config.js',
@@ -2285,14 +2287,14 @@ function sendJson(res, method, status, obj, extraHeaders = {}) {
   });
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
     req.on('data', (chunk) => {
       total += chunk.length;
-      if (total > MAX_BODY_BYTES) {
-        reject(Object.assign(new Error('Payload terlalu besar (maks 2 MB)'), { status: 413 }));
+      if (total > maxBytes) {
+        reject(Object.assign(new Error('Payload terlalu besar (maks ' + Math.round(maxBytes / (1024 * 1024)) + ' MB)'), { status: 413 }));
         req.destroy();
         return;
       }
@@ -2325,6 +2327,15 @@ function createServer(options = {}) {
   const authStore = envCfg.authEnabled
     ? (options.authStore || auth.createAuthStore({ pgBackend, env }))
     : null;
+  const triage = options.triage || createTriageEngine({
+    dataDir,
+    getKnownTenants: () => {
+      const st = store.getState();
+      const asocT = st?.workspaces?.asoc?.counters?.tenants || [];
+      const socT = st?.workspaces?.soc?.counters?.tenants || [];
+      return [...new Set([...asocT, ...socT])];
+    },
+  });
 
   let seedInfo = { seeded: false, username: null, usingDefaultPassword: false };
   const ready = (async () => {
@@ -2332,6 +2343,7 @@ function createServer(options = {}) {
     if (authStore) {
       seedInfo = await authStore.ensureDefaultAdmin();
     }
+    triage.start();
     return { seedInfo };
   })();
 
@@ -2634,6 +2646,104 @@ function createServer(options = {}) {
           }
           return sendJson(res, method, 400, { error: 'Invalid rejection endpoint' });
         }
+
+        // Autonomous Wazuh Polling, Live Feed, AI Triage & Case Audit History
+        if (pathname === '/api/triage/config') {
+          if (method === 'GET') {
+            return sendJson(res, method, 200, { ok: true, config: triage.getConfig() });
+          }
+          if (method === 'POST') {
+            const body = await readJsonBody(req);
+            const updated = triage.updateConfig(body);
+            return sendJson(res, method, 200, { ok: true, config: updated });
+          }
+        }
+        if (method === 'POST' && pathname === '/api/triage/test-wazuh') {
+          const body = await readJsonBody(req);
+          const result = await triage.testWazuhConnection(body?.wazuh || body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/test-ollama') {
+          const body = await readJsonBody(req);
+          const result = await triage.testOllamaConnection(body?.ollama || body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/worker') {
+          const body = await readJsonBody(req);
+          const action = String(body?.action || '').trim().toLowerCase();
+          if (action === 'start') {
+            const cfg = triage.updateConfig({ workerEnabled: true });
+            return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
+          }
+          if (action === 'pause' || action === 'stop') {
+            const cfg = triage.updateConfig({ workerEnabled: false });
+            return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
+          }
+          if (action === 'poll_now') {
+            const resPoll = await triage.pollOnce();
+            return sendJson(res, method, 200, resPoll);
+          }
+          return sendJson(res, method, 400, { error: 'Aksi worker harus start, pause, atau poll_now' });
+        }
+        if (method === 'GET' && pathname === '/api/triage/queue') {
+          const snap = triage.getQueueSnapshot({
+            verdict: urlObj.searchParams.get('verdict') || '',
+            tenant: urlObj.searchParams.get('tenant') || '',
+            q: urlObj.searchParams.get('q') || '',
+          });
+          return sendJson(res, method, 200, snap);
+        }
+        if (method === 'GET' && pathname === '/api/triage/live') {
+          const live = await triage.getLiveFeed({
+            scope: urlObj.searchParams.get('scope') || 'watermark',
+            size: urlObj.searchParams.get('size') || 500,
+            tenant: urlObj.searchParams.get('tenant') || '',
+            status: urlObj.searchParams.get('status') || '',
+            q: urlObj.searchParams.get('q') || '',
+          });
+          return sendJson(res, method, 200, live);
+        }
+        if (method === 'GET' && pathname === '/api/triage/stream') {
+          triage.subscribeSse(res);
+          return;
+        }
+        if (method === 'POST' && pathname === '/api/triage/merge') {
+          const body = await readJsonBody(req);
+          const result = triage.mergeGroups(body?.groupIds || []);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/dismiss') {
+          const body = await readJsonBody(req);
+          const result = triage.dismissGroups({
+            groupIds: body?.groupIds || (body?.groupId ? [body.groupId] : []),
+            verdict: body?.verdict || '',
+          });
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/reset') {
+          const body = await readJsonBody(req);
+          const result = triage.resetQueue(body?.watermarkTimestamp);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/promote') {
+          const body = await readJsonBody(req, 12 * 1024 * 1024);
+          const result = triage.promoteToCase(body, reqUser);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'GET' && pathname === '/api/triage/history') {
+          const data = triage.listCaseHistory({
+            tenant: urlObj.searchParams.get('tenant') || '',
+            q: urlObj.searchParams.get('q') || '',
+            limit: urlObj.searchParams.get('limit') || 200,
+          });
+          return sendJson(res, method, 200, data);
+        }
+        if (method === 'POST' && pathname.startsWith('/api/triage/history/') && pathname.endsWith('/fetch-wazuh')) {
+          const id = pathname.slice('/api/triage/history/'.length, -'/fetch-wazuh'.length);
+          if (!id || id.includes('/')) return sendJson(res, method, 400, { error: 'ID Audit Triage tidak valid' });
+          const result = await triage.fetchHistoryWazuhDetails(id);
+          return sendJson(res, method, 200, result);
+        }
         return sendJson(res, method, 404, { error: 'API endpoint not found' });
       } catch (err) {
         return sendJson(res, method, err.status || 500, err.body || { error: err.message || 'Internal Server Error' });
@@ -2677,7 +2787,9 @@ function createServer(options = {}) {
   server.ready = ready;
   server.store = store;
   server.authStore = authStore;
+  server.triage = triage;
   server.on('close', () => {
+    triage.stop();
     if (ownsPgBackend && pgBackend) {
       pgBackend.close().catch(() => {});
     }

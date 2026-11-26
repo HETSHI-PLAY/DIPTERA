@@ -538,13 +538,20 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       assert.equal(evalExpr(approvedExpr, waitApprove), true);
       assert.equal(evalExpr(approvedExpr, waitDeny), false);
 
-      // Verify Auto-Archive Raw Alert JSON to Google Drive branch & execute Code nodes
+      // Verify Auto-Archive Raw Alert JSON to Google Drive branch (upsert/overwrite) & execute Code nodes
       assert.equal(byName.has('Resolve Raw Alert Folder'), true);
+      assert.equal(byName.has('Find Existing Raw Alert in Drive'), true);
+      assert.equal(byName.has('Prepare Raw Alert Upsert'), true);
+      assert.equal(byName.has('If Raw Alert Exists in Drive'), true);
+      assert.equal(byName.has('Overwrite Raw Alert JSON in Drive'), true);
       assert.equal(byName.has('Upload Raw Alert JSON to Drive'), true);
       const rawResolveNode = byName.get('Resolve Raw Alert Folder');
+      const rawOverwriteNode = byName.get('Overwrite Raw Alert JSON in Drive');
       const rawUploadNode = byName.get('Upload Raw Alert JSON to Drive');
       assert.equal(rawResolveNode.type, 'n8n-nodes-base.code');
       assert.ok(rawResolveNode.parameters.jsCode.includes('1pTE3ltkZescxA2CxY5YyzLzxAqB14b00'), 'Existing tenant Folder ID must remain intact');
+      assert.equal(rawOverwriteNode.type, 'n8n-nodes-base.httpRequest');
+      assert.equal(rawOverwriteNode.parameters.method, 'PATCH');
       assert.equal(rawUploadNode.type, 'n8n-nodes-base.httpRequest');
       assert.equal(rawUploadNode.parameters.method, 'POST');
       assert.equal(rawUploadNode.credentials?.googleDriveOAuth2Api?.id, '7f0cCrwdCRPYfXFT');
@@ -553,7 +560,11 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       const fcnTargets = wf.connections['Format Case Name'].main[0].map((e) => e.node);
       assert.ok(fcnTargets.includes('If Create IRIS Case'));
       assert.ok(fcnTargets.includes('Resolve Raw Alert Folder'));
-      assert.equal(wf.connections['Resolve Raw Alert Folder'].main[0][0].node, 'Upload Raw Alert JSON to Drive');
+      assert.equal(wf.connections['Resolve Raw Alert Folder'].main[0][0].node, 'Find Existing Raw Alert in Drive');
+      assert.equal(wf.connections['Find Existing Raw Alert in Drive'].main[0][0].node, 'Prepare Raw Alert Upsert');
+      assert.equal(wf.connections['Prepare Raw Alert Upsert'].main[0][0].node, 'If Raw Alert Exists in Drive');
+      assert.equal(wf.connections['If Raw Alert Exists in Drive'].main[0][0].node, 'Overwrite Raw Alert JSON in Drive');
+      assert.equal(wf.connections['If Raw Alert Exists in Drive'].main[1][0].node, 'Upload Raw Alert JSON to Drive');
 
       const rawWazuhSample = {
         _index: 'wazuh-alerts-4.x-2026.11.24',

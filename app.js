@@ -371,6 +371,9 @@
     resetPwTargetUser: null,
   };
 
+  const bridgeViewListeners = [];
+  const bridgeAuthListeners = [];
+  const bridgeLogoutListeners = [];
   let persistTimer = null;
   let sharedPollTimer = null;
   let approvalPollTimer = null;
@@ -547,6 +550,7 @@
     const hadUser = Boolean(state.currentUser);
     state.currentUser = null;
     stopPollingTimers();
+    for (const fn of bridgeLogoutListeners) { try { fn(); } catch {} }
     setAuthUiState(null, true);
     if (hadUser) {
       toast({ type: 'info', title: 'Sesi berakhir', body: 'Silakan login kembali untuk melanjutkan.' });
@@ -673,6 +677,7 @@
       await apiFetch('/api/auth/logout', { method: 'POST', body: '{}' });
     } catch {}
     stopPollingTimers();
+    for (const fn of bridgeLogoutListeners) { try { fn(); } catch {} }
     state.users = [];
     state.knownPendingApprovalIds = null;
     state.knownOpenRejectionIds = null;
@@ -3530,20 +3535,30 @@
     if (!heading) return;
     if (state.view === 'history') heading.textContent = 'Riwayat';
     else if (state.view === 'approvals') heading.textContent = 'Approval';
+    else if (state.view === 'triage') heading.textContent = 'AI Triage Queue';
+    else if (state.view === 'live-feed') heading.textContent = 'Realtime Wazuh Feed (1:1)';
+    else if (state.view === 'triage-history') heading.textContent = 'Audit Case Triage';
     else if (state.view === 'settings') heading.textContent = 'Pengaturan';
     else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Repeating' : 'Reporting';
   }
 
   function switchView(view) {
-    state.view = (view === 'history' || view === 'approvals' || view === 'settings') ? view : 'queue';
+    const allowed = ['queue', 'history', 'approvals', 'settings', 'triage', 'live-feed', 'triage-history'];
+    state.view = allowed.includes(view) ? view : 'queue';
     const isQueue = state.view === 'queue';
     const isHist = state.view === 'history';
     const isAppr = state.view === 'approvals';
+    const isTriage = state.view === 'triage';
+    const isLive = state.view === 'live-feed';
+    const isTrgHist = state.view === 'triage-history';
     const isSettings = state.view === 'settings';
 
     $('#view-queue').hidden = !isQueue;
     $('#view-history').hidden = !isHist;
     $('#view-approvals').hidden = !isAppr;
+    if ($('#view-triage')) $('#view-triage').hidden = !isTriage;
+    if ($('#view-live-feed')) $('#view-live-feed').hidden = !isLive;
+    if ($('#view-triage-history')) $('#view-triage-history').hidden = !isTrgHist;
     $('#view-settings').hidden = !isSettings;
 
     $('#tab-queue').classList.toggle('active', isQueue);
@@ -3552,12 +3567,19 @@
     $('#tab-history').setAttribute('aria-selected', String(isHist));
     $('#tab-approvals').classList.toggle('active', isAppr);
     $('#tab-approvals').setAttribute('aria-selected', String(isAppr));
+    $('#tab-triage')?.classList.toggle('active', isTriage);
+    $('#tab-triage')?.setAttribute('aria-selected', String(isTriage));
+    $('#tab-live-feed')?.classList.toggle('active', isLive);
+    $('#tab-live-feed')?.setAttribute('aria-selected', String(isLive));
+    $('#tab-triage-history')?.classList.toggle('active', isTrgHist);
+    $('#tab-triage-history')?.setAttribute('aria-selected', String(isTrgHist));
     $('#tab-settings').classList.toggle('active', isSettings);
     $('#tab-settings').setAttribute('aria-selected', String(isSettings));
 
     if (isMobileViewport()) setSidebarOpen(false);
     updateViewHeading();
     renderRejectionBanner();
+    for (const fn of bridgeViewListeners) { try { fn(state.view); } catch {} }
 
     if (isHist) {
       state.historyWorkspace = state.activeWorkspace;
@@ -3877,7 +3899,10 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && $('#app-shell')?.classList.contains('sidebar-open')) {
+      if (e.key === 'Escape' && $('#raw-json-modal') && !$('#raw-json-modal').hidden) {
+        e.preventDefault();
+        $('#raw-json-modal').hidden = true;
+      } else if (e.key === 'Escape' && $('#app-shell')?.classList.contains('sidebar-open')) {
         e.preventDefault();
         setSidebarOpen(false);
       } else if (e.key === 'Escape' && $('#user-modal') && !$('#user-modal').hidden) {
@@ -3955,7 +3980,137 @@
         }
       }
     }
+    for (const fn of bridgeAuthListeners) { try { fn(state.currentUser); } catch {} }
   }
+
+  function promoteTriageAlertsToForm({ tenant, chunks, workspace } = {}) {
+    const targetWs = workspace === 'asoc' ? 'asoc' : (workspace === 'soc' ? 'soc' : state.activeWorkspace);
+    if (state.activeWorkspace !== targetWs) switchWorkspace(targetWs);
+    switchView('queue');
+    if (targetWs === 'asoc') setActiveMode('reporting');
+
+    const w = wsState(targetWs);
+    for (const c of w.cards) {
+      if (!c.collapsed) {
+        c.collapsed = true;
+        refreshCard(c);
+      }
+    }
+
+    const tnKey = roleKey('tenant', targetWs);
+    const tkKey = roleKey('ticket', targetWs);
+    const cidKey = roleKey('caseId', targetWs);
+    const alertKey = roleKey('alert', targetWs);
+    const listChunks = Array.isArray(chunks) && chunks.length ? chunks : [];
+
+    // Match tenant case-insensitively against configured dropdown options when available
+    let resolvedTenantVal = String(tenant || '').trim();
+    const tenantField = w.settings.fields.find((f) => f.key === tnKey);
+    if (tenantField && Array.isArray(tenantField.options) && resolvedTenantVal) {
+      const low = resolvedTenantVal.toLowerCase();
+      const matchedOpt = tenantField.options.find((opt) => String(opt).toLowerCase() === low || String(opt).toLowerCase().includes(low) || low.includes(String(opt).toLowerCase()));
+      if (matchedOpt) resolvedTenantVal = matchedOpt;
+      else if (!tenantField.options.includes(resolvedTenantVal)) {
+        tenantField.options.push(resolvedTenantVal);
+      }
+    }
+
+    const createdCards = [];
+    for (let i = listChunks.length - 1; i >= 0; i--) {
+      const chunk = listChunks[i];
+      const values = {};
+      if (tnKey && resolvedTenantVal) values[tnKey] = resolvedTenantVal;
+      if (alertKey) {
+        values[alertKey] = chunk.length === 1
+          ? JSON.stringify(chunk[0], null, 2)
+          : JSON.stringify(chunk, null, 2);
+      }
+      const card = newCard({ mode: 'reporting', values }, targetWs);
+      w.cards.unshift(card);
+      createdCards.unshift(card);
+    }
+
+    recomputeQueueTickets(targetWs, { noPersist: true });
+    renderAllCards();
+
+    const firstCard = createdCards[0] || null;
+    if (firstCard && alertKey) {
+      const alertInp = refs.get(firstCard.id)?.inputs[alertKey];
+      if (alertInp) {
+        alertInp.focus();
+        alertInp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+    persist();
+
+    return {
+      workspace: targetWs,
+      tenant: resolvedTenantVal,
+      ticketNumber: firstCard && tkKey ? (firstCard.values[tkKey] || null) : null,
+      irisCaseId: firstCard && cidKey ? (firstCard.values[cidKey] || null) : null,
+      cardCount: createdCards.length,
+    };
+  }
+
+  function previewNextCardMeta(tenant, ws = state.activeWorkspace) {
+    const targetWs = ws === 'soc' ? 'soc' : 'asoc';
+    const w = wsState(targetWs);
+    const tkKey = roleKey('ticket', targetWs);
+    const tnKey = roleKey('tenant', targetWs);
+    const cidKey = roleKey('caseId', targetWs);
+    let resolvedTenant = String(tenant || '').trim();
+    const tenantField = w.settings.fields.find((f) => f.key === tnKey);
+    if (tenantField && Array.isArray(tenantField.options) && resolvedTenant) {
+      const low = resolvedTenant.toLowerCase();
+      const matchedOpt = tenantField.options.find((opt) => String(opt).toLowerCase() === low || String(opt).toLowerCase().includes(low) || low.includes(String(opt).toLowerCase()));
+      if (matchedOpt) resolvedTenant = matchedOpt;
+    }
+
+    let ticketNumber = null;
+    if (tkKey && tnKey && resolvedTenant && N.computeQueueTickets && w.settings.autoNumber !== false) {
+      const tempCards = w.cards.map((c) => ({ id: c.id, status: c.status, ticketAuto: c.ticketAuto, values: { ...c.values } }));
+      const tempCard = { id: '__preview__', status: 'idle', ticketAuto: true, values: { [tnKey]: resolvedTenant } };
+      tempCards.push(tempCard);
+      N.computeQueueTickets(tempCards, w.counters.ticketsByTenant || {}, {
+        autoNumber: true,
+        ticketKey: tkKey,
+        tenantKey: tnKey,
+      });
+      ticketNumber = tempCard.values[tkKey] || null;
+    }
+
+    let irisCaseId = null;
+    if (targetWs === 'soc' && cidKey && N.nextValue) {
+      let cursor = w.counters.lastIrisCaseId || null;
+      for (const prev of w.cards) {
+        const pv = String(prev.values[cidKey] ?? '').trim();
+        if (pv && N.lastNumber(pv) != null) cursor = pv;
+      }
+      irisCaseId = cursor ? N.nextValue(cursor) : null;
+    }
+    return { workspace: targetWs, tenant: resolvedTenant, ticketNumber, irisCaseId };
+  }
+
+  window.DipteraBridge = {
+    apiFetch,
+    toast,
+    copyText,
+    fmtWib,
+    esc,
+    switchView,
+    previewNextCardMeta,
+    promoteTriageAlertsToForm,
+    getActiveWorkspace: () => state.activeWorkspace,
+    getKnownTenants: () => wsState(state.activeWorkspace).counters?.tenants || [],
+    onViewChange: (fn) => { if (typeof fn === 'function') bridgeViewListeners.push(fn); },
+    onAuthReady: (fn) => {
+      if (typeof fn === 'function') {
+        bridgeAuthListeners.push(fn);
+        if (state.appStarted) fn(state.currentUser);
+      }
+    },
+    onLogout: (fn) => { if (typeof fn === 'function') bridgeLogoutListeners.push(fn); },
+  };
 
   async function init() {
     loadLocalState();

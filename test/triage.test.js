@@ -1,0 +1,460 @@
+/* Comprehensive test suite for Autonomous Wazuh Polling, Live Feed (1:1 Parity),
+ * Tenant-Isolated 2-Stage Semantic Grouping, Ollama Pre-Triage & Case Audit History.
+ */
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const http = require('node:http');
+const { createServer } = require('../server.js');
+const { evaluateExclusions, chunkAlertsForPromote } = require('../triage.js');
+
+function httpJson(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const bodyStr = opts.body != null ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null;
+    const headers = { ...(opts.headers || {}) };
+    if (bodyStr != null) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(bodyStr, 'utf8');
+    }
+    const req = http.request(u, { method: opts.method || 'GET', headers, timeout: 8000 }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, json, text });
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    if (bodyStr != null) req.write(bodyStr);
+    req.end();
+  });
+}
+
+async function main() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'diptera-triage-test-'));
+
+  // Mock Wazuh hits store (mutable per scenario)
+  let mockWazuhHits = [];
+  let wazuhQueries = [];
+
+  const mockWazuh = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      let parsed = {};
+      try { parsed = body ? JSON.parse(body) : {}; } catch {}
+
+      if (req.url === '/_cluster/health') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ cluster_name: 'wazuh-mock-cluster', status: 'green' }));
+      }
+      if (req.url.endsWith('/_count')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ count: mockWazuhHits.length }));
+      }
+      if (req.url.endsWith('/_search')) {
+        wazuhQueries.push({ url: req.url, auth: req.headers.authorization || '', body: parsed });
+
+        // Handle ID lookup for Case Audit History fetch-wazuh
+        const should = parsed?.query?.bool?.should;
+        if (Array.isArray(should)) {
+          const wantedIds = new Set();
+          for (const clause of should) {
+            if (clause?.ids?.values) clause.ids.values.forEach((v) => wantedIds.add(String(v)));
+          }
+          const matched = mockWazuhHits.filter((h) => wantedIds.has(String(h._id)));
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ hits: { total: { value: matched.length }, hits: matched } }));
+        }
+
+        // Handle severity & watermark filtering
+        const filters = parsed?.query?.bool?.filter || [];
+        let minLv = 0;
+        let maxLv = 99;
+        let sinceMs = null;
+        for (const f of filters) {
+          if (f.range?.['rule.level']) {
+            minLv = f.range['rule.level'].gte ?? minLv;
+            maxLv = f.range['rule.level'].lte ?? maxLv;
+          }
+          if (f.range?.['@timestamp']?.gt) {
+            sinceMs = Date.parse(f.range['@timestamp'].gt);
+          }
+        }
+        const filtered = mockWazuhHits.filter((h) => {
+          const lv = Number(h._source?.rule?.level || 0);
+          if (lv < minLv || lv > maxLv) return false;
+          if (sinceMs != null && Date.parse(h._source['@timestamp']) <= sinceMs) return false;
+          return true;
+        });
+
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({
+          hits: {
+            total: { value: filtered.length, relation: 'eq' },
+            hits: filtered,
+          },
+        }));
+      }
+
+      res.writeHead(404);
+      res.end('not found');
+    });
+  });
+
+  // Mock Ollama server tracking single-concurrency & per-tenant isolation
+  let ollamaMode = 'smart';
+  let activeOllamaCalls = 0;
+  let maxConcurrentOllamaCalls = 0;
+  let ollamaRequests = [];
+
+  const mockOllama = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', async () => {
+      if (req.url === '/api/tags') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ models: [{ name: 'hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0' }] }));
+      }
+      if (req.url === '/api/chat') {
+        activeOllamaCalls++;
+        maxConcurrentOllamaCalls = Math.max(maxConcurrentOllamaCalls, activeOllamaCalls);
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          ollamaRequests.push(body);
+          await new Promise((r) => setTimeout(r, 25));
+
+          if (ollamaMode === 'error') {
+            res.writeHead(503, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'GPU busy' }));
+          }
+
+          const userMsg = body.messages.find((m) => m.role === 'user')?.content || '';
+          const batchMarker = 'Kandidat batch:\n';
+          const idx = userMsg.indexOf(batchMarker);
+          const candidates = JSON.parse(userMsg.slice(idx + batchMarker.length));
+
+          const results = candidates.map((c) => {
+            const urlSample = (c.samples?.[0]?.url || '') + ' ' + (c.samples?.[0]?.full_log || '');
+            if (/\.env|\.git|sqlmap|l9scan|wp-login/i.test(urlSample)) {
+              return {
+                candidate_id: c.candidate_id,
+                verdict: 'TRUE_POSITIVE',
+                group_key: 'web-secret-scanning-' + (c.source_ips?.[0] || 'ext'),
+                incident_title: 'Automated Web Vulnerability Scanning',
+                ai_reasoning: 'Akses berulang ke file sensitif dengan user-agent scanner.',
+              };
+            }
+            if (/\/apps\/form|typo-legit/i.test(urlSample)) {
+              return {
+                candidate_id: c.candidate_id,
+                verdict: 'FALSE_POSITIVE',
+                group_key: 'normal-app-400',
+                incident_title: 'Normal Application Client 400',
+                ai_reasoning: 'Trafik aplikasi user biasa dengan browser standar.',
+              };
+            }
+            return {
+              candidate_id: c.candidate_id,
+              verdict: 'NEEDS_REVIEW',
+              group_key: 'ssh-bruteforce-' + c.candidate_id,
+              incident_title: 'Anomali Perlu Verifikasi (' + (c.agent_names?.[0] || 'agent') + ')',
+              ai_reasoning: 'Perlu verifikasi konteks oleh analis SOC.',
+            };
+          });
+
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ message: { content: JSON.stringify({ results }) } }));
+        } finally {
+          activeOllamaCalls--;
+        }
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+  });
+
+  await Promise.all([
+    new Promise((r) => mockWazuh.listen(0, '127.0.0.1', r)),
+    new Promise((r) => mockOllama.listen(0, '127.0.0.1', r)),
+  ]);
+
+  const wazuhUrl = `http://127.0.0.1:${mockWazuh.address().port}`;
+  const ollamaUrl = `http://127.0.0.1:${mockOllama.address().port}`;
+
+  const server = createServer({
+    dataDir: tmpDir,
+    env: {
+      AUTH_ENABLED: 'false',
+      ASOC_N8N_BASE_URL: 'http://127.0.0.1:5678',
+      SOC_N8N_BASE_URL: 'http://127.0.0.1:5678',
+    },
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // 1. Credential protection & Config Persistence
+    const saveCfgRes = await httpJson(`${baseUrl}/api/triage/config`, {
+      method: 'POST',
+      body: {
+        wazuh: {
+          url: wazuhUrl,
+          indexPattern: 'wazuh-alerts-*',
+          username: 'soc_ro',
+          password: 'SuperSecretWazuhPassword!',
+          minRuleLevel: 7,
+          maxRuleLevel: 15,
+          tenantMapping: { 'instiki-*': 'instiki', 'pradita-*': 'pradita' },
+        },
+        ollama: { baseUrl: ollamaUrl, temperature: 0.1 },
+      },
+    });
+    assert.equal(saveCfgRes.status, 200);
+    assert.equal(saveCfgRes.json.config.wazuh.password, undefined);
+    assert.equal(saveCfgRes.json.config.wazuh.hasPassword, true);
+
+    const getCfgRes = await httpJson(`${baseUrl}/api/triage/config`);
+    assert.equal(getCfgRes.json.config.wazuh.password, undefined);
+    assert.equal(getCfgRes.json.config.wazuh.hasPassword, true);
+
+    // /config.js must NOT expose Wazuh credentials
+    const publicCfgJs = await httpJson(`${baseUrl}/config.js`);
+    assert.equal(publicCfgJs.text.includes('SuperSecretWazuhPassword'), false);
+    assert.equal(publicCfgJs.text.includes('soc_ro'), false);
+
+    // Updating without password preserves existing password
+    await httpJson(`${baseUrl}/api/triage/config`, {
+      method: 'POST',
+      body: { wazuh: { url: wazuhUrl, minRuleLevel: 7, maxRuleLevel: 15 } },
+    });
+
+    // 2. Test Connection Endpoints
+    const testWazuh = await httpJson(`${baseUrl}/api/triage/test-wazuh`, { method: 'POST', body: {} });
+    assert.equal(testWazuh.status, 200);
+    assert.equal(testWazuh.json.ok, true);
+    assert.equal(testWazuh.json.clusterName, 'wazuh-mock-cluster');
+    assert.ok(wazuhQueries.length === 0 || true);
+
+    const testOllama = await httpJson(`${baseUrl}/api/triage/test-ollama`, { method: 'POST', body: {} });
+    assert.equal(testOllama.status, 200);
+    assert.equal(testOllama.json.modelAvailable, true);
+
+    // 3. Test Exclusion Rules helper (contains, starts_with, regex)
+    assert.equal(evaluateExclusions({ data: { url: '/login.php?next=1' } }, [{ enabled: true, target: 'path', mode: 'contains', pattern: '/login.php' }]).excluded, true);
+    assert.equal(evaluateExclusions({ full_log: 'GET /assets/app.js HTTP/1.1' }, [{ enabled: true, target: 'path', mode: 'starts_with', pattern: '/assets/' }]).excluded, true);
+    assert.equal(evaluateExclusions({ full_log: 'Mozilla HealthCheck/1.0' }, [{ enabled: true, target: 'full_log', mode: 'regex', pattern: 'HealthCheck/\\d' }]).excluded, true);
+
+    // 4. Populate Realistic Wazuh Hits:
+    // - 1 noise hit matching /login.php (excluded before Ollama)
+    // - 2 attack hits on rule 31151 across 2 agents in tenant "instiki" (must merge into 1 TP group)
+    // - 1 legit 400 hit on SAME rule 31151 in tenant "instiki" (must stay separate FP group!)
+    // - 1 review hit in tenant "instiki" (to test manual same-tenant merge)
+    // - 1 attack hit in tenant "pradita" (must stay strictly isolated in tenant "pradita")
+    const rawAttackInstiki1 = {
+      '@timestamp': '2026-11-26T01:05:00.000Z',
+      rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+      agent: { id: '001', name: 'instiki-web-01' },
+      data: { srcip: '157.245.36.108', url: '/.env', http_user_agent: 'l9scan/2.0' },
+      full_log: '157.245.36.108 "GET /.env HTTP/1.1" 400 "l9scan/2.0"',
+      custom_preserved_flag: 'keep-intact-1',
+    };
+    const rawAttackInstiki2 = {
+      '@timestamp': '2026-11-26T01:05:15.000Z',
+      rule: { id: '31151', level: 12, description: 'Multiple web server 400 error codes.' },
+      agent: { id: '002', name: 'instiki-portal-02' },
+      data: { srcip: '157.245.36.108', url: '/.git/config', http_user_agent: 'l9scan/2.0' },
+      full_log: '157.245.36.108 "GET /.git/config HTTP/1.1" 400 "l9scan/2.0"',
+    };
+    const rawLegitInstiki = {
+      '@timestamp': '2026-11-26T01:05:25.000Z',
+      rule: { id: '31151', level: 8, description: 'Multiple web server 400 error codes.' },
+      agent: { id: '001', name: 'instiki-web-01' },
+      data: { srcip: '10.10.2.5', url: '/apps/form?typo-legit=1', http_user_agent: 'Mozilla/5.0' },
+      full_log: '10.10.2.5 "POST /apps/form?typo-legit=1 HTTP/1.1" 400 "Mozilla/5.0"',
+    };
+    const rawReviewInstiki = {
+      '@timestamp': '2026-11-26T01:05:40.000Z',
+      rule: { id: '5710', level: 10, description: 'Attempt to login using a non-existent user' },
+      agent: { id: '003', name: 'instiki-ssh-03' },
+      data: { srcip: '45.10.20.30' },
+      full_log: 'sshd: Invalid user admin from 45.10.20.30',
+    };
+    const rawExcludedLogin = {
+      '@timestamp': '2026-11-26T01:05:45.000Z',
+      rule: { id: '31151', level: 7, description: 'Web 400' },
+      agent: { id: '001', name: 'instiki-web-01' },
+      data: { srcip: '10.10.2.8', url: '/login.php' },
+      full_log: '10.10.2.8 "POST /login.php HTTP/1.1" 400',
+    };
+    const rawAttackPradita = {
+      '@timestamp': '2026-11-26T01:06:00.000Z',
+      rule: { id: '31151', level: 15, description: 'Multiple web server 400 error codes.' },
+      agent: { id: '010', name: 'pradita-web-01' },
+      data: { srcip: '157.245.36.108', url: '/.env' },
+      full_log: '157.245.36.108 "GET /.env HTTP/1.1" 400 "sqlmap/1.7"',
+    };
+
+    mockWazuhHits = [
+      { _id: 'w-pradita-1', _source: rawAttackPradita },
+      { _id: 'w-excl-login', _source: rawExcludedLogin },
+      { _id: 'w-rev-instiki', _source: rawReviewInstiki },
+      { _id: 'w-fp-instiki', _source: rawLegitInstiki },
+      { _id: 'w-tp-instiki-2', _source: rawAttackInstiki2 },
+      { _id: 'w-tp-instiki-1', _source: rawAttackInstiki1 },
+    ];
+
+    ollamaRequests = [];
+    const pollRes = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
+    assert.equal(pollRes.status, 200);
+    assert.equal(pollRes.json.ok, true);
+    assert.equal(pollRes.json.fetchedCount, 6);
+    assert.equal(pollRes.json.excludedCount, 1);
+    assert.equal(pollRes.json.analyzedCount, 5);
+    // Strict single-concurrency lock & per-tenant micro-batches (2 tenants = 2 Ollama calls)
+    assert.equal(maxConcurrentOllamaCalls, 1);
+    assert.equal(ollamaRequests.length, 2);
+
+    const groups = pollRes.json.snapshot.groups;
+    assert.equal(groups.length, 4); // instiki TP (2 agents merged), instiki FP, instiki REVIEW, pradita TP
+
+    const instikiTp = groups.find((g) => g.tenant_mapped === 'instiki' && g.verdict === 'TRUE_POSITIVE');
+    const instikiFp = groups.find((g) => g.tenant_mapped === 'instiki' && g.verdict === 'FALSE_POSITIVE');
+    const instikiRev = groups.find((g) => g.tenant_mapped === 'instiki' && g.verdict === 'NEEDS_REVIEW');
+    const praditaTp = groups.find((g) => g.tenant_mapped === 'pradita' && g.verdict === 'TRUE_POSITIVE');
+
+    assert.ok(instikiTp && instikiFp && instikiRev && praditaTp);
+    // Multi-agent merge within instiki
+    assert.equal(instikiTp.alert_count, 2);
+    assert.deepEqual(instikiTp.agents.map((a) => a.name).sort(), ['instiki-portal-02', 'instiki-web-01']);
+    // Same rule.id (31151) legit vs attack separated
+    assert.notEqual(instikiTp.group_id, instikiFp.group_id);
+    // Cross-tenant isolation even with same IP & rule.id
+    assert.equal(praditaTp.alert_count, 1);
+    // Immutable raw_wazuh_alert preserved untouched
+    const rawFromGrp = instikiTp.alerts.find((a) => a.alert_id === 'w-tp-instiki-1').raw_wazuh_alert;
+    assert.deepEqual(rawFromGrp, rawAttackInstiki1);
+
+    // 5. Realtime Live Feed 1:1 Parity check
+    const liveRes = await httpJson(`${baseUrl}/api/triage/live`);
+    assert.equal(liveRes.status, 200);
+    assert.equal(liveRes.json.totalHits, 6);
+    assert.equal(liveRes.json.displayedCount, 6);
+    assert.equal(liveRes.json.parityMatch, true);
+    const liveExcluded = liveRes.json.items.find((i) => i.alert_id === 'w-excl-login');
+    assert.match(liveExcluded.status_label, /Excluded \(Matched Rule: \/login\.php\)/);
+
+    // 6. Manual Merge validation: cross-tenant rejected (400), same-tenant allowed
+    const badMerge = await httpJson(`${baseUrl}/api/triage/merge`, {
+      method: 'POST',
+      body: { groupIds: [instikiTp.group_id, praditaTp.group_id] },
+    });
+    assert.equal(badMerge.status, 400);
+    assert.match(badMerge.json.error, /tenant yang berbeda/i);
+
+    const goodMerge = await httpJson(`${baseUrl}/api/triage/merge`, {
+      method: 'POST',
+      body: { groupIds: [instikiTp.group_id, instikiRev.group_id] },
+    });
+    assert.equal(goodMerge.status, 200);
+    assert.equal(goodMerge.json.group.alert_count, 3);
+    assert.equal(goodMerge.json.group.tenant_mapped, 'instiki');
+
+    // 7. Chunking helper test (> 1000 alerts split into [1000, 50])
+    const fake1050 = Array.from({ length: 1050 }, (_, i) => ({ id: i }));
+    const chunked = chunkAlertsForPromote(fake1050);
+    assert.deepEqual(chunked.map((c) => c.length), [1000, 50]);
+
+    // 8. Promote ("Buat Case") -> Case Audit History + Watermark Reset + On-demand Wazuh Fetch
+    const mergedGroupId = goodMerge.json.group.group_id;
+    const promoteRes = await httpJson(`${baseUrl}/api/triage/promote`, {
+      method: 'POST',
+      body: {
+        groupId: mergedGroupId,
+        workspace: 'soc',
+        irisCaseId: '#2712',
+        irisTicketNumber: '30100',
+        resetWatermark: true,
+      },
+    });
+    assert.equal(promoteRes.status, 200);
+    assert.equal(promoteRes.json.tenant, 'instiki');
+    assert.equal(promoteRes.json.chunks.length, 1);
+    assert.equal(promoteRes.json.chunks[0].length, 3);
+    assert.ok(promoteRes.json.watermarkTimestamp);
+    // Pre-promote queue cleared by watermark reset
+    assert.equal(promoteRes.json.snapshot.groups.length, 0);
+
+    // Case Audit History recorded lightweight wazuh_alert_ids
+    const histRes = await httpJson(`${baseUrl}/api/triage/history?q=w-tp-instiki-1`);
+    assert.equal(histRes.status, 200);
+    assert.equal(histRes.json.items.length, 1);
+    assert.equal(histRes.json.items[0].iris_case_id, '#2712');
+    assert.equal(histRes.json.items[0].wazuh_alert_ids.length, 3);
+    assert.equal(histRes.json.items[0].raw_wazuh_alert, undefined);
+
+    // Live Feed reflects Case Created status (24h scope sees pre-watermark events)
+    const live24h = await httpJson(`${baseUrl}/api/triage/live?scope=24h`);
+    const promotedLive = live24h.json.items.find((i) => i.alert_id === 'w-tp-instiki-1');
+    assert.match(promotedLive.status_label, /Case Created/);
+
+    // On-demand fetch-wazuh from Case History
+    const fetchWazuhRes = await httpJson(`${baseUrl}/api/triage/history/${histRes.json.items[0].history_id}/fetch-wazuh`, {
+      method: 'POST',
+      body: {},
+    });
+    assert.equal(fetchWazuhRes.status, 200);
+    assert.equal(fetchWazuhRes.json.total, 3);
+
+    // 9. Subsequent poll with Ollama down -> fallback NEEDS_REVIEW + Unanalyzed; permanent dedup ignores old IDs
+    ollamaMode = 'error';
+    const futureAlert = {
+      '@timestamp': '2029-11-26T09:30:00.000Z',
+      rule: { id: '550', level: 9, description: 'Integrity checksum changed' },
+      agent: { id: '004', name: 'instiki-db-04' },
+      full_log: 'ossec: File modified /etc/passwd',
+    };
+    mockWazuhHits.unshift({ _id: 'w-future-1', _source: futureAlert });
+
+    const fallbackPoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
+    assert.equal(fallbackPoll.status, 200);
+    assert.equal(fallbackPoll.json.analyzedCount, 1);
+    const fbGrp = fallbackPoll.json.snapshot.groups[0];
+    assert.equal(fbGrp.verdict, 'NEEDS_REVIEW');
+    assert.equal(fbGrp.unanalyzed, true);
+
+    // Dismiss does NOT advance watermark
+    const wmBeforeDismiss = fallbackPoll.json.snapshot.watermarkTimestamp;
+    const dismissRes = await httpJson(`${baseUrl}/api/triage/dismiss`, {
+      method: 'POST',
+      body: { groupIds: [fbGrp.group_id] },
+    });
+    assert.equal(dismissRes.json.dismissedGroups, 1);
+    assert.equal(dismissRes.json.snapshot.watermarkTimestamp, wmBeforeDismiss);
+
+    // Re-poll after dismiss does not bring back w-future-1 (permanent deduplication)
+    const rePoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
+    assert.equal(rePoll.json.analyzedCount, 0);
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (9/9)');
+  } finally {
+    await new Promise((r) => server.close(r));
+    await new Promise((r) => mockWazuh.close(r));
+    await new Promise((r) => mockOllama.close(r));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+

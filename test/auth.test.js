@@ -538,7 +538,20 @@ function createMockPgPool() {
         return false;
       }
     };
-    for (const sensitive of ['.env', '.env.local', 'backup.sql', 'secret.key', 'Alpha Reporter v2 (1).json', 'finding.md', 'update.md']) {
+    for (const sensitive of [
+      '.env',
+      '.env.local',
+      'backup.sql',
+      'secret.key',
+      'credentials.json',
+      'server-config.json',
+      'data/server-config.json',
+      'docker-compose.override.yml',
+      'Alpha Reporter v2 (1).json',
+      'finding.md',
+      'update.md',
+      'Dokumentasi Diptera.md'
+    ]) {
       assert.equal(checkIgnored(sensitive), true, `${sensitive} must be ignored by .gitignore`);
     }
     assert.equal(checkIgnored('.env.example'), false, '.env.example must stay tracked');

@@ -2794,6 +2794,191 @@ textarea {
   }
 }
 
+/* ---------- Autonomous Wazuh Triage, Live Feed & Audit History ---------- */
+
+.settings-subnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.trg-num-sm {
+  width: 88px !important;
+}
+
+.trg-model-inp {
+  flex: 1 1 260px;
+}
+
+.triage-view,
+.live-feed-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.triage-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+}
+
+.triage-status-bar select {
+  width: auto;
+  min-width: 180px;
+}
+
+.triage-merge-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-control);
+}
+
+.triage-card {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.triage-card.verdict-tp {
+  border-color: var(--rose-line);
+}
+
+.triage-card.verdict-review {
+  border-color: var(--amber-line);
+}
+
+.triage-card.verdict-fp {
+  border-color: var(--green-line);
+}
+
+.triage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.triage-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.triage-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.triage-select-wrap input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.triage-card-time {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.triage-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.triage-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip.verdict-tp {
+  color: var(--rose);
+  background: var(--rose-bg);
+  border-color: var(--rose-line);
+}
+
+.chip.verdict-review {
+  color: var(--amber-text);
+  background: var(--amber-bg);
+  border-color: var(--amber-line);
+}
+
+.chip.verdict-fp {
+  color: var(--green);
+  background: var(--green-bg);
+  border-color: var(--green-line);
+}
+
+.chip.verdict-unanalyzed {
+  color: var(--amber-text);
+  background: var(--amber-bg);
+  border-color: var(--amber-line);
+}
+
+.triage-alerts-sublist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.triage-subalert-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font-size: 12.5px;
+}
+
+.triage-subalert-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.triage-subalert-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
