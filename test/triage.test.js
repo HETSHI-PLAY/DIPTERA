@@ -165,6 +165,27 @@ async function main() {
             res.writeHead(503, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'GPU busy' }));
           }
+          if (ollamaMode === 'truncated_once' && typeof body.format === 'object') {
+            const uMsg = body.messages.find((m) => m.role === 'user')?.content || '';
+            const cIdx = uMsg.indexOf('Kandidat batch:\n');
+            const cands = JSON.parse(uMsg.slice(cIdx + 'Kandidat batch:\n'.length));
+            const firstObj = JSON.stringify({
+              candidate_id: cands[0].candidate_id,
+              verdict: 'FALSE_POSITIVE',
+              group_key: 'salvaged-first',
+              incident_title: 'Salvaged Candidate 1',
+              ai_reasoning: 'Salvaged dari JSON terpotong.',
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({
+              done_reason: 'length',
+              message: { content: `{"results":[${firstObj},{"candidate_id":"${cands[1]?.candidate_id || 'x'}","verdict":"TRU` },
+            }));
+          }
+          if (ollamaMode === 'bad_schema_json_retry' && typeof body.format === 'object') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ done_reason: 'stop', message: { content: 'not valid json at all' } }));
+          }
 
           const userMsg = body.messages.find((m) => m.role === 'user')?.content || '';
           const exMarker = 'Sampel alert unik:\n';
@@ -399,7 +420,7 @@ async function main() {
     assert.equal(typeof firstOllamaReq.format, 'object');
     assert.ok(firstOllamaReq.format?.properties?.results);
     assert.equal(firstOllamaReq.options.num_ctx, 12288);
-    assert.equal(firstOllamaReq.options.num_predict, 2048);
+    assert.equal(firstOllamaReq.options.num_predict, 4096);
     assert.equal(firstOllamaReq.options.top_p, 0.85);
     assert.equal(firstOllamaReq.options.top_k, 20);
     assert.equal(firstOllamaReq.options.repeat_penalty, 1.05);
@@ -561,7 +582,7 @@ async function main() {
     assert.equal(burstPoll.status, 200);
     assert.equal(burstPoll.json.analyzedCount, 22);
     assert.equal(maxConcurrentOllamaCalls, 1);
-    assert.equal(ollamaRequests.length, 2); // chunked 15 + 2
+    assert.equal(ollamaRequests.length, 3); // chunked 8 + 8 + 1
 
     const burstReqBody = ollamaRequests[0].messages.find((m) => m.role === 'user').content;
     const burstCands = JSON.parse(burstReqBody.slice(burstReqBody.indexOf('Kandidat batch:\n') + 'Kandidat batch:\n'.length));
@@ -947,7 +968,94 @@ async function main() {
     assert.equal(confirmExplicit.json.rulesAdded[0].pattern, '/service/mhs/*/ip-kemarin');
     assert.equal(confirmExplicit.json.rulesAdded[0].mode, 'wildcard');
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (17/17)');
+    // 18. Truncated JSON salvage & auto-retry fallback from strict schema to format:"json" (0 Unanalyzed)
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    mockWazuhHits.push(
+      {
+        _id: 'w-trunc-1',
+        _source: {
+          '@timestamp': '2029-11-26T10:20:00.000Z',
+          rule: { id: '31151', level: 8, description: 'Truncated test 1' },
+          agent: { id: '011', name: 'instiki-web-11' },
+          data: { srcip: '10.10.2.9', url: '/apps/form/ok-1' },
+          full_log: 'GET /apps/form/ok-1 HTTP/1.1 400 typo-legit',
+        },
+      },
+      {
+        _id: 'w-trunc-2',
+        _source: {
+          '@timestamp': '2029-11-26T10:20:05.000Z',
+          rule: { id: '31151', level: 9, description: 'Truncated test 2' },
+          agent: { id: '011', name: 'instiki-web-11' },
+          data: { srcip: '10.10.2.9', url: '/apps/form/ok-2' },
+          full_log: 'GET /apps/form/ok-2 HTTP/1.1 400 typo-legit',
+        },
+      },
+    );
+    ollamaMode = 'truncated_once';
+    const truncRes = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:19:50.000Z', to: '2029-11-26T10:20:20.000Z', size: 10 },
+    });
+    assert.equal(truncRes.status, 200);
+    assert.equal(truncRes.json.analyzedCount, 2);
+    assert.equal(truncRes.json.snapshot.groups.some((g) => g.unanalyzed), false);
+
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    ollamaMode = 'bad_schema_json_retry';
+    const retryRes = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:19:50.000Z', to: '2029-11-26T10:20:20.000Z', size: 10 },
+    });
+    assert.equal(retryRes.status, 200);
+    assert.equal(retryRes.json.analyzedCount, 2);
+    assert.equal(retryRes.json.snapshot.groups.some((g) => g.unanalyzed), false);
+
+    // 19. Separate Ollama settings update preserves Wazuh/Exclusions & forwards custom inference params
+    const saveOllamaOnly = await httpJson(`${baseUrl}/api/triage/config`, {
+      method: 'POST',
+      body: {
+        ollama: {
+          numCtx: 16384,
+          numPredict: 3072,
+          topP: 0.9,
+          topK: 40,
+          repeatPenalty: 1.1,
+          microBatchSize: 4,
+          timeoutSec: 120,
+          keepAlive: '5m',
+          think: true,
+          useJsonSchema: false,
+        },
+      },
+    });
+    assert.equal(saveOllamaOnly.status, 200);
+    assert.equal(saveOllamaOnly.json.config.wazuh.url, wazuhUrl);
+    assert.ok(saveOllamaOnly.json.config.exclusionRules.length >= 1);
+    assert.equal(saveOllamaOnly.json.config.ollama.numCtx, 16384);
+    assert.equal(saveOllamaOnly.json.config.ollama.numPredict, 3072);
+    assert.equal(saveOllamaOnly.json.config.ollama.useJsonSchema, false);
+
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    ollamaMode = 'smart';
+    ollamaRequests = [];
+    const customParamPoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:19:50.000Z', to: '2029-11-26T10:20:20.000Z', size: 10 },
+    });
+    assert.equal(customParamPoll.status, 200);
+    assert.equal(ollamaRequests.length, 1);
+    const customReq = ollamaRequests[0];
+    assert.equal(customReq.options.num_ctx, 16384);
+    assert.equal(customReq.options.num_predict, 3072);
+    assert.equal(customReq.options.top_p, 0.9);
+    assert.equal(customReq.options.top_k, 40);
+    assert.equal(customReq.options.repeat_penalty, 1.1);
+    assert.equal(customReq.keep_alive, '5m');
+    assert.equal(customReq.think, true);
+    assert.equal(customReq.format, 'json');
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (19/19)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

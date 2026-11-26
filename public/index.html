@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126j" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126j" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126j" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126k" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126k" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126k" />
 </head>
 
 <body>
@@ -200,7 +200,8 @@
         <section id="view-settings" class="settings-view" role="tabpanel" aria-labelledby="tab-settings" hidden>
           <div class="settings-subnav" role="group" aria-label="Kategori Pengaturan">
             <button class="ws-tab-btn active" id="set-mode-workspace" type="button" aria-pressed="true">Pengaturan Workspace (ASOC / SOC)</button>
-            <button class="ws-tab-btn" id="set-mode-triage" type="button" aria-pressed="false">Wazuh Indexer &amp; AI Triage</button>
+            <button class="ws-tab-btn" id="set-mode-wazuh" type="button" aria-pressed="false">Wazuh Indexer</button>
+            <button class="ws-tab-btn" id="set-mode-ollama" type="button" aria-pressed="false">Ollama AI</button>
           </div>
 
           <div class="settings" id="settings-workspace-panel">
@@ -335,11 +336,11 @@
             </div>
           </div>
 
-          <div class="settings" id="settings-triage-panel" hidden>
+          <div class="settings" id="settings-wazuh-panel" hidden>
             <div class="settings-head">
               <div>
-                <h2 class="settings-title">Konfigurasi Wazuh Indexer, Ollama &amp; Exclusion Rules</h2>
-                <p class="field-hint">Tersimpan aman di server (data/server-config.json). Password tidak pernah dikirim kembali ke browser.</p>
+                <h2 class="settings-title">Konfigurasi Wazuh Indexer &amp; Polling</h2>
+                <p class="field-hint">Tersimpan aman di server (data/server-config.json). Password tidak pernah dikirim kembali ke browser. Daftar Exclude dikelola di menu <strong class="mono">Daftar Exclude</strong>.</p>
               </div>
               <div class="settings-head-actions">
                 <label class="check">
@@ -403,27 +404,94 @@
                 <div id="trg-wazuh-test-msg" class="um-msg" hidden></div>
               </div>
 
+              <label class="field field-full">
+                <span class="field-label">Tenant Mapping Rules (JSON: agent.name / wildcard -&gt; tenant)</span>
+                <textarea id="trg-tenant-mapping" rows="3" spellcheck="false" placeholder='{"pradita-*": "praditauniversity", "sebatik": "instikibali"}'></textarea>
+              </label>
+            </div>
+
+            <div class="settings-actions">
+              <button class="btn primary" id="btn-save-wazuh-cfg" type="button">Simpan Pengaturan Wazuh</button>
+              <button class="btn ghost" id="btn-close-wazuh-cfg" type="button">Tutup ke AI Triage</button>
+              <span class="spacer"></span>
+              <button class="btn danger" id="btn-set-purge-triage" type="button">Kosongkan DB Triage</button>
+              <button class="btn ghost" id="btn-set-purge-audit" type="button">Kosongkan Audit</button>
+            </div>
+          </div>
+
+          <div class="settings" id="settings-ollama-panel" hidden>
+            <div class="settings-head">
+              <div>
+                <h2 class="settings-title">Konfigurasi Ollama AI &amp; Parameter Inferensi</h2>
+                <p class="field-hint">Atur model lokal, context window (<code class="mono">num_ctx</code>), batas output (<code class="mono">num_predict</code>), sampling, batch size, dan System Prompt khusus AI Triage.</p>
+              </div>
+            </div>
+
+            <div class="settings-grid">
               <label class="field">
                 <span class="field-label">Ollama Base URL</span>
                 <input type="text" id="trg-ollama-url" placeholder="http://localhost:11434" spellcheck="false" />
               </label>
 
               <div class="field">
-                <span class="field-label">Model Ollama &amp; Temperature</span>
+                <span class="field-label">Model Ollama</span>
+                <input type="text" id="trg-ollama-model" list="trg-ollama-models-list" placeholder="hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0" spellcheck="false" />
+                <datalist id="trg-ollama-models-list"></datalist>
                 <div class="settings-inline">
-                  <input type="text" id="trg-ollama-model" class="trg-model-inp" placeholder="hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0" spellcheck="false" />
-                  <input type="number" id="trg-ollama-temp" class="trg-num-sm" min="0" max="2" step="0.05" title="Temperature" />
-                </div>
-                <div class="settings-inline">
-                  <button type="button" id="btn-test-ollama" class="btn ghost btn-xs">Test Koneksi Ollama</button>
+                  <button type="button" id="btn-test-ollama" class="btn ghost btn-xs">Test Koneksi &amp; Muat Model</button>
                 </div>
                 <div id="trg-ollama-test-msg" class="um-msg" hidden></div>
               </div>
 
-              <label class="field field-full">
-                <span class="field-label">Tenant Mapping Rules (JSON: agent.name / wildcard -&gt; tenant)</span>
-                <textarea id="trg-tenant-mapping" rows="3" spellcheck="false" placeholder='{"pradita-*": "praditauniversity", "sebatik": "instikibali"}'></textarea>
+              <label class="field">
+                <span class="field-label">Context Window (<code class="mono">num_ctx</code>)</span>
+                <input type="number" id="trg-ollama-num-ctx" min="2048" max="131072" step="512" />
+                <span class="field-hint">Ukuran konteks prompt + sampel log (default 12288; naikkan jika log panjang, turunkan jika VRAM ketat).</span>
               </label>
+
+              <label class="field">
+                <span class="field-label">Max Output Token (<code class="mono">num_predict</code>)</span>
+                <input type="number" id="trg-ollama-num-predict" min="256" max="32768" step="128" />
+                <span class="field-hint">Batas token JSON jawaban per panggilan (default 4096 agar tidak terpotong di tengah).</span>
+              </label>
+
+              <div class="field">
+                <span class="field-label">Parameter Sampling</span>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-ollama-temp">Temp:</label>
+                  <input type="number" id="trg-ollama-temp" class="trg-num-sm" min="0" max="2" step="0.05" />
+                  <label class="field-hint" for="trg-ollama-top-p">Top P:</label>
+                  <input type="number" id="trg-ollama-top-p" class="trg-num-sm" min="0.05" max="1" step="0.05" />
+                  <label class="field-hint" for="trg-ollama-top-k">Top K:</label>
+                  <input type="number" id="trg-ollama-top-k" class="trg-num-sm" min="1" max="200" step="1" />
+                </div>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-ollama-repeat-penalty">Repeat Penalty:</label>
+                  <input type="number" id="trg-ollama-repeat-penalty" class="trg-num-sm" min="0.8" max="2" step="0.05" />
+                </div>
+              </div>
+
+              <div class="field">
+                <span class="field-label">Batch, Timeout &amp; Keep Alive</span>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-ollama-batch-size">Micro-Batch:</label>
+                  <input type="number" id="trg-ollama-batch-size" class="trg-num-sm" min="1" max="30" step="1" title="Jumlah kandidat unik per 1 call Ollama" />
+                  <label class="field-hint" for="trg-ollama-timeout">Timeout (dtk):</label>
+                  <input type="number" id="trg-ollama-timeout" class="trg-num-sm" min="15" max="600" step="5" />
+                </div>
+                <div class="settings-inline">
+                  <label class="field-hint" for="trg-ollama-keep-alive">Keep Alive:</label>
+                  <input type="text" id="trg-ollama-keep-alive" class="trg-num-sm" placeholder="2m" spellcheck="false" title="Durasi model ditahan di VRAM (mis. 2m, 5m, 0, -1)" />
+                </div>
+              </div>
+
+              <div class="field field-full">
+                <span class="field-label">Perilaku &amp; Format Respons Model</span>
+                <div class="checks">
+                  <label class="check"><input type="checkbox" id="trg-ollama-think" /> <span>Aktifkan mode Thinking / Reasoning (<code class="mono">think: true</code> — lebih lambat, matikan untuk kecepatan maksimal)</span></label>
+                  <label class="check"><input type="checkbox" id="trg-ollama-json-schema" /> <span>Gunakan Structured JSON Schema ketat (<code class="mono">format: schema</code> — matikan jika model GGUF sering gagal JSON)</span></label>
+                </div>
+              </div>
 
               <div class="field field-full">
                 <div class="settings-inline">
@@ -433,37 +501,12 @@
                 </div>
                 <textarea id="trg-system-prompt" rows="6" spellcheck="false"></textarea>
               </div>
-
-              <div class="field field-full">
-                <div class="settings-inline">
-                  <span class="field-label">Custom Exclusion Rules (Whitelist Path &amp; Full Log — Hemat VRAM GPU)</span>
-                  <span class="spacer"></span>
-                  <button type="button" id="btn-add-exclusion" class="btn ghost btn-xs">+ Tambah Aturan</button>
-                </div>
-                <div class="users-table-wrap">
-                  <table class="users-table">
-                    <thead>
-                      <tr>
-                        <th>Aktif</th>
-                        <th>Target</th>
-                        <th>Mode</th>
-                        <th>Pola</th>
-                        <th>Keterangan</th>
-                        <th>Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody id="trg-exclusions-tbody"></tbody>
-                  </table>
-                </div>
-              </div>
             </div>
 
             <div class="settings-actions">
-              <button class="btn primary" id="btn-save-triage-cfg" type="button">Simpan Konfigurasi Triage</button>
-              <button class="btn ghost" id="btn-close-triage-cfg" type="button">Tutup ke AI Triage</button>
-              <span class="spacer"></span>
-              <button class="btn danger" id="btn-set-purge-triage" type="button">Kosongkan DB Triage</button>
-              <button class="btn ghost" id="btn-set-purge-audit" type="button">Kosongkan Audit</button>
+              <button class="btn primary" id="btn-save-ollama-cfg" type="button">Simpan Pengaturan Ollama</button>
+              <button class="btn ghost" id="btn-reset-ollama-params" type="button">Reset Parameter Default</button>
+              <button class="btn ghost" id="btn-close-ollama-cfg" type="button">Tutup ke AI Triage</button>
             </div>
           </div>
         </section>
@@ -1313,11 +1356,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126j"></script>
-  <script src="/js/numbering.js?v=20261126j"></script>
-  <script src="/js/extract.js?v=20261126j"></script>
-  <script src="/js/app.js?v=20261126j"></script>
-  <script src="/js/triage-ui.js?v=20261126j"></script>
+  <script src="/config.js?v=20261126k"></script>
+  <script src="/js/numbering.js?v=20261126k"></script>
+  <script src="/js/extract.js?v=20261126k"></script>
+  <script src="/js/app.js?v=20261126k"></script>
+  <script src="/js/triage-ui.js?v=20261126k"></script>
 </body>
 
 </html>

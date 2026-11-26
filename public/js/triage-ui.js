@@ -660,7 +660,6 @@
             if (res.rules) {
               triageState.exclusions = res.rules;
               if (triageState.config) triageState.config.exclusionRules = res.rules;
-              renderExclusionRows(res.rules);
             }
             renderExclusionsPage();
             B.toast({ type: 'success', title: 'Rule exclude diperbarui' });
@@ -700,7 +699,6 @@
             if (res.rules) {
               triageState.exclusions = res.rules;
               if (triageState.config) triageState.config.exclusionRules = res.rules;
-              renderExclusionRows(res.rules);
             }
             renderExclusionsPage();
           } catch (err) {
@@ -718,7 +716,6 @@
             if (res.rules) {
               triageState.exclusions = res.rules;
               if (triageState.config) triageState.config.exclusionRules = res.rules;
-              renderExclusionRows(res.rules);
             }
             renderExclusionsPage();
             B.toast({ type: 'info', title: 'Rule exclude dihapus' });
@@ -737,7 +734,6 @@
       if (Array.isArray(res?.rules)) {
         triageState.exclusions = res.rules;
         if (triageState.config) triageState.config.exclusionRules = res.rules;
-        renderExclusionRows(res.rules);
         renderExclusionsPage();
       }
     } catch (err) {
@@ -745,67 +741,34 @@
     }
   }
 
+  const DEFAULT_OLLAMA_PARAMS = {
+    temperature: 0.1,
+    numCtx: 12288,
+    numPredict: 4096,
+    topP: 0.85,
+    topK: 20,
+    repeatPenalty: 1.05,
+    microBatchSize: 8,
+    timeoutSec: 90,
+    keepAlive: '2m',
+    think: false,
+    useJsonSchema: true,
+  };
+
   function switchSettingsSubTab(tab) {
-    const isTriage = tab === 'triage';
-    triageState.settingsTab = isTriage ? 'triage' : 'workspace';
-    $('#set-mode-workspace')?.classList.toggle('active', !isTriage);
-    $('#set-mode-workspace')?.setAttribute('aria-pressed', String(!isTriage));
-    $('#set-mode-triage')?.classList.toggle('active', isTriage);
-    $('#set-mode-triage')?.setAttribute('aria-pressed', String(isTriage));
-    if ($('#settings-workspace-panel')) $('#settings-workspace-panel').hidden = isTriage;
-    if ($('#settings-triage-panel')) $('#settings-triage-panel').hidden = !isTriage;
-    if (isTriage) loadTriageConfig();
-  }
+    const mode = (tab === 'wazuh' || tab === 'ollama') ? tab : 'workspace';
+    triageState.settingsTab = mode;
+    $('#set-mode-workspace')?.classList.toggle('active', mode === 'workspace');
+    $('#set-mode-workspace')?.setAttribute('aria-pressed', String(mode === 'workspace'));
+    $('#set-mode-wazuh')?.classList.toggle('active', mode === 'wazuh');
+    $('#set-mode-wazuh')?.setAttribute('aria-pressed', String(mode === 'wazuh'));
+    $('#set-mode-ollama')?.classList.toggle('active', mode === 'ollama');
+    $('#set-mode-ollama')?.setAttribute('aria-pressed', String(mode === 'ollama'));
 
-  function renderExclusionRows(rules = []) {
-    const tbody = $('#trg-exclusions-tbody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-    for (const rule of rules) {
-      const tr = document.createElement('tr');
-      tr.dataset.ruleId = rule.id || '';
-      tr.innerHTML = `
-        <td>
-          <input type="checkbox" class="trg-ex-enabled" aria-label="Aktifkan aturan" ${rule.enabled !== false ? 'checked' : ''} />
-        </td>
-        <td>
-          <select class="trg-ex-target" aria-label="Target field">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target || 'path')}</select>
-        </td>
-        <td>
-          <select class="trg-ex-mode" aria-label="Mode pencocokan">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode || 'contains')}</select>
-        </td>
-        <td>
-          <input type="text" class="trg-ex-pattern" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin atau regex" spellcheck="false" aria-label="Pola pengecualian" />
-        </td>
-        <td>
-          <input type="text" class="trg-ex-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan (opsional)" aria-label="Keterangan aturan" />
-        </td>
-        <td>
-          <button type="button" class="btn danger btn-xs trg-ex-del">Hapus</button>
-        </td>
-      `;
-      $('.trg-ex-del', tr)?.addEventListener('click', () => tr.remove());
-      tbody.appendChild(tr);
-    }
-  }
-
-  function collectExclusionRows() {
-    const tbody = $('#trg-exclusions-tbody');
-    if (!tbody) return [];
-    const rules = [];
-    tbody.querySelectorAll('tr').forEach((tr) => {
-      const pattern = ($('.trg-ex-pattern', tr)?.value || '').trim();
-      if (!pattern) return;
-      rules.push({
-        id: tr.dataset.ruleId || ('ex_' + Math.random().toString(36).slice(2, 8)),
-        enabled: Boolean($('.trg-ex-enabled', tr)?.checked),
-        target: $('.trg-ex-target', tr)?.value || 'path',
-        mode: $('.trg-ex-mode', tr)?.value || 'contains',
-        pattern,
-        note: ($('.trg-ex-note', tr)?.value || '').trim(),
-      });
-    });
-    return rules;
+    if ($('#settings-workspace-panel')) $('#settings-workspace-panel').hidden = mode !== 'workspace';
+    if ($('#settings-wazuh-panel')) $('#settings-wazuh-panel').hidden = mode !== 'wazuh';
+    if ($('#settings-ollama-panel')) $('#settings-ollama-panel').hidden = mode !== 'ollama';
+    if (mode === 'wazuh' || mode === 'ollama') loadTriageConfig();
   }
 
   function fillTriageConfigForm(cfg) {
@@ -827,20 +790,29 @@
     if ($('#trg-poll-min')) $('#trg-poll-min').value = String(w.pollIntervalMin ?? 3);
     if ($('#trg-live-sec')) $('#trg-live-sec').value = String(w.liveRefreshSec ?? 10);
     if ($('#trg-tenant-mapping')) $('#trg-tenant-mapping').value = JSON.stringify(w.tenantMapping || {}, null, 2);
+    if ($('#trg-worker-enabled')) $('#trg-worker-enabled').checked = Boolean(cfg.workerEnabled);
 
     if ($('#trg-ollama-url')) $('#trg-ollama-url').value = o.baseUrl || 'http://localhost:11434';
     if ($('#trg-ollama-model')) $('#trg-ollama-model').value = o.model || '';
-    if ($('#trg-ollama-temp')) $('#trg-ollama-temp').value = String(o.temperature ?? 0.1);
+    if ($('#trg-ollama-num-ctx')) $('#trg-ollama-num-ctx').value = String(o.numCtx ?? DEFAULT_OLLAMA_PARAMS.numCtx);
+    if ($('#trg-ollama-num-predict')) $('#trg-ollama-num-predict').value = String(o.numPredict ?? DEFAULT_OLLAMA_PARAMS.numPredict);
+    if ($('#trg-ollama-temp')) $('#trg-ollama-temp').value = String(o.temperature ?? DEFAULT_OLLAMA_PARAMS.temperature);
+    if ($('#trg-ollama-top-p')) $('#trg-ollama-top-p').value = String(o.topP ?? DEFAULT_OLLAMA_PARAMS.topP);
+    if ($('#trg-ollama-top-k')) $('#trg-ollama-top-k').value = String(o.topK ?? DEFAULT_OLLAMA_PARAMS.topK);
+    if ($('#trg-ollama-repeat-penalty')) $('#trg-ollama-repeat-penalty').value = String(o.repeatPenalty ?? DEFAULT_OLLAMA_PARAMS.repeatPenalty);
+    if ($('#trg-ollama-batch-size')) $('#trg-ollama-batch-size').value = String(o.microBatchSize ?? DEFAULT_OLLAMA_PARAMS.microBatchSize);
+    if ($('#trg-ollama-timeout')) $('#trg-ollama-timeout').value = String(o.timeoutSec ?? DEFAULT_OLLAMA_PARAMS.timeoutSec);
+    if ($('#trg-ollama-keep-alive')) $('#trg-ollama-keep-alive').value = o.keepAlive || DEFAULT_OLLAMA_PARAMS.keepAlive;
+    if ($('#trg-ollama-think')) $('#trg-ollama-think').checked = Boolean(o.think);
+    if ($('#trg-ollama-json-schema')) $('#trg-ollama-json-schema').checked = o.useJsonSchema !== false;
     if ($('#trg-system-prompt')) $('#trg-system-prompt').value = o.systemPrompt || '';
-    if ($('#trg-worker-enabled')) $('#trg-worker-enabled').checked = Boolean(cfg.workerEnabled);
 
-    renderExclusionRows(cfg.exclusionRules || []);
     triageState.exclusions = Array.isArray(cfg.exclusionRules) ? cfg.exclusionRules : [];
     renderExclusionsPage();
     updateWorkerButtonsUi();
   }
 
-  function buildTriageConfigPayload() {
+  function buildWazuhConfigPayload() {
     let tenantMapping = {};
     const rawMap = ($('#trg-tenant-mapping')?.value || '{}').trim();
     if (rawMap) {
@@ -874,13 +846,27 @@
     return {
       workerEnabled: Boolean($('#trg-worker-enabled')?.checked),
       wazuh,
+    };
+  }
+
+  function buildOllamaConfigPayload() {
+    return {
       ollama: {
         baseUrl: ($('#trg-ollama-url')?.value || '').trim(),
         model: ($('#trg-ollama-model')?.value || '').trim(),
-        temperature: Number($('#trg-ollama-temp')?.value ?? 0.1),
+        numCtx: Number($('#trg-ollama-num-ctx')?.value || DEFAULT_OLLAMA_PARAMS.numCtx),
+        numPredict: Number($('#trg-ollama-num-predict')?.value || DEFAULT_OLLAMA_PARAMS.numPredict),
+        temperature: Number($('#trg-ollama-temp')?.value ?? DEFAULT_OLLAMA_PARAMS.temperature),
+        topP: Number($('#trg-ollama-top-p')?.value ?? DEFAULT_OLLAMA_PARAMS.topP),
+        topK: Number($('#trg-ollama-top-k')?.value || DEFAULT_OLLAMA_PARAMS.topK),
+        repeatPenalty: Number($('#trg-ollama-repeat-penalty')?.value ?? DEFAULT_OLLAMA_PARAMS.repeatPenalty),
+        microBatchSize: Number($('#trg-ollama-batch-size')?.value || DEFAULT_OLLAMA_PARAMS.microBatchSize),
+        timeoutSec: Number($('#trg-ollama-timeout')?.value || DEFAULT_OLLAMA_PARAMS.timeoutSec),
+        keepAlive: ($('#trg-ollama-keep-alive')?.value || DEFAULT_OLLAMA_PARAMS.keepAlive).trim(),
+        think: Boolean($('#trg-ollama-think')?.checked),
+        useJsonSchema: Boolean($('#trg-ollama-json-schema')?.checked),
         systemPrompt: $('#trg-system-prompt')?.value || '',
       },
-      exclusionRules: collectExclusionRows(),
     };
   }
 
@@ -893,8 +879,8 @@
     }
   }
 
-  async function saveTriageConfig() {
-    const payload = buildTriageConfigPayload();
+  async function saveWazuhConfig() {
+    const payload = buildWazuhConfigPayload();
     if (!payload) return;
     try {
       const res = await B.apiFetch('/api/triage/config', {
@@ -902,16 +888,30 @@
         body: JSON.stringify(payload),
       });
       if (res?.config) fillTriageConfigForm(res.config);
-      B.toast({ type: 'success', title: 'Konfigurasi Wazuh & AI Triage disimpan' });
+      B.toast({ type: 'success', title: 'Konfigurasi Wazuh Indexer disimpan' });
       fetchTriageQueue(true);
     } catch (err) {
-      B.toast({ type: 'error', title: 'Gagal menyimpan konfigurasi triage', body: err.message });
+      B.toast({ type: 'error', title: 'Gagal menyimpan konfigurasi Wazuh', body: err.message });
+    }
+  }
+
+  async function saveOllamaConfig() {
+    const payload = buildOllamaConfigPayload();
+    try {
+      const res = await B.apiFetch('/api/triage/config', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (res?.config) fillTriageConfigForm(res.config);
+      B.toast({ type: 'success', title: 'Konfigurasi Ollama AI disimpan' });
+    } catch (err) {
+      B.toast({ type: 'error', title: 'Gagal menyimpan konfigurasi Ollama', body: err.message });
     }
   }
 
   async function testWazuh() {
     const msgEl = $('#trg-wazuh-test-msg');
-    const payload = buildTriageConfigPayload();
+    const payload = buildWazuhConfigPayload();
     if (!payload) return;
     showInlineStatus(msgEl, true, 'Menguji koneksi ke Wazuh Indexer…');
     try {
@@ -928,14 +928,17 @@
 
   async function testOllama() {
     const msgEl = $('#trg-ollama-test-msg');
-    const payload = buildTriageConfigPayload();
-    if (!payload) return;
+    const payload = buildOllamaConfigPayload();
     showInlineStatus(msgEl, true, 'Menguji koneksi ke Ollama…');
     try {
       const res = await B.apiFetch('/api/triage/test-ollama', {
         method: 'POST',
         body: JSON.stringify({ ollama: payload.ollama }),
       });
+      const datalist = $('#trg-ollama-models-list');
+      if (datalist && Array.isArray(res.models)) {
+        datalist.innerHTML = res.models.map((m) => `<option value="${B.esc(m)}"></option>`).join('');
+      }
       const modelNote = res.modelAvailable
         ? 'model ditemukan'
         : `model belum terdaftar di /api/tags (${res.models?.length || 0} model tersedia)`;
@@ -1280,7 +1283,6 @@
     if (Array.isArray(res?.exclusionRules)) {
       triageState.exclusions = res.exclusionRules;
       if (triageState.config) triageState.config.exclusionRules = res.exclusionRules;
-      renderExclusionRows(res.exclusionRules);
       renderExclusionsPage();
     }
     if (res?.snapshot) {
@@ -2231,12 +2233,8 @@
     $('#tab-triage-exclusions')?.addEventListener('click', () => B.switchView('triage-exclusions'));
 
     $('#set-mode-workspace')?.addEventListener('click', () => switchSettingsSubTab('workspace'));
-    $('#set-mode-triage')?.addEventListener('click', () => switchSettingsSubTab('triage'));
-    $('#btn-add-exclusion')?.addEventListener('click', () => {
-      const current = collectExclusionRows();
-      current.push({ target: 'path', mode: 'contains', pattern: '', enabled: true, note: '' });
-      renderExclusionRows(current);
-    });
+    $('#set-mode-wazuh')?.addEventListener('click', () => switchSettingsSubTab('wazuh'));
+    $('#set-mode-ollama')?.addEventListener('click', () => switchSettingsSubTab('ollama'));
     $('#trg-sev-preset')?.addEventListener('change', (e) => {
       const val = e.target.value;
       if (val === 'medium_critical') {
@@ -2248,9 +2246,25 @@
       }
     });
     $('#btn-test-wazuh')?.addEventListener('click', testWazuh);
+    $('#btn-save-wazuh-cfg')?.addEventListener('click', saveWazuhConfig);
+    $('#btn-close-wazuh-cfg')?.addEventListener('click', () => B.switchView('triage'));
     $('#btn-test-ollama')?.addEventListener('click', testOllama);
-    $('#btn-save-triage-cfg')?.addEventListener('click', saveTriageConfig);
-    $('#btn-close-triage-cfg')?.addEventListener('click', () => B.switchView('triage'));
+    $('#btn-save-ollama-cfg')?.addEventListener('click', saveOllamaConfig);
+    $('#btn-close-ollama-cfg')?.addEventListener('click', () => B.switchView('triage'));
+    $('#btn-reset-ollama-params')?.addEventListener('click', () => {
+      if ($('#trg-ollama-num-ctx')) $('#trg-ollama-num-ctx').value = String(DEFAULT_OLLAMA_PARAMS.numCtx);
+      if ($('#trg-ollama-num-predict')) $('#trg-ollama-num-predict').value = String(DEFAULT_OLLAMA_PARAMS.numPredict);
+      if ($('#trg-ollama-temp')) $('#trg-ollama-temp').value = String(DEFAULT_OLLAMA_PARAMS.temperature);
+      if ($('#trg-ollama-top-p')) $('#trg-ollama-top-p').value = String(DEFAULT_OLLAMA_PARAMS.topP);
+      if ($('#trg-ollama-top-k')) $('#trg-ollama-top-k').value = String(DEFAULT_OLLAMA_PARAMS.topK);
+      if ($('#trg-ollama-repeat-penalty')) $('#trg-ollama-repeat-penalty').value = String(DEFAULT_OLLAMA_PARAMS.repeatPenalty);
+      if ($('#trg-ollama-batch-size')) $('#trg-ollama-batch-size').value = String(DEFAULT_OLLAMA_PARAMS.microBatchSize);
+      if ($('#trg-ollama-timeout')) $('#trg-ollama-timeout').value = String(DEFAULT_OLLAMA_PARAMS.timeoutSec);
+      if ($('#trg-ollama-keep-alive')) $('#trg-ollama-keep-alive').value = DEFAULT_OLLAMA_PARAMS.keepAlive;
+      if ($('#trg-ollama-think')) $('#trg-ollama-think').checked = DEFAULT_OLLAMA_PARAMS.think;
+      if ($('#trg-ollama-json-schema')) $('#trg-ollama-json-schema').checked = DEFAULT_OLLAMA_PARAMS.useJsonSchema;
+      B.toast({ type: 'info', title: 'Parameter Ollama dikembalikan ke default (klik Simpan untuk menerapkan)' });
+    });
     $('#btn-reset-prompt')?.addEventListener('click', () => {
       if ($('#trg-system-prompt')) {
         $('#trg-system-prompt').value = 'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.\nAnalisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.\n\nAturan Klasifikasi:\n1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.\n2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).\n3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /mhs/nim, kesalahan input user biasa, atau crawler/healthcheck internal).\n\nAturan Pengelompokan:\n- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.\n- Gabungkan kandidat yang merupakan kampanye serangan yang sama ke dalam satu insiden walaupun menyasar beberapa agent berbeda di dalam tenant ini.\nKeluarkan output HANYA dalam format JSON valid sesuai skema yang diminta.';
@@ -2645,7 +2659,6 @@
         if (res.rules) {
           triageState.exclusions = res.rules;
           if (triageState.config) triageState.config.exclusionRules = res.rules;
-          renderExclusionRows(res.rules);
         }
         renderExclusionsPage();
         B.toast({
@@ -2844,7 +2857,6 @@
           if (Array.isArray(lastRes?.rules)) {
             triageState.exclusions = lastRes.rules;
             if (triageState.config) triageState.config.exclusionRules = lastRes.rules;
-            renderExclusionRows(lastRes.rules);
             renderExclusionsPage();
           }
           closeExcludePreviewModal();
@@ -2892,7 +2904,7 @@
       fetchExclusionRules(false);
     } else if (view === 'triage-inspector') {
       renderInspectorView();
-    } else if (view === 'settings' && triageState.settingsTab === 'triage') {
+    } else if (view === 'settings' && (triageState.settingsTab === 'wazuh' || triageState.settingsTab === 'ollama')) {
       loadTriageConfig();
     }
   });

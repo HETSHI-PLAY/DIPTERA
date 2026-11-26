@@ -13,7 +13,7 @@ const MAX_ACTIVE_GROUPS = 500;
 const MAX_CASE_HISTORY = 2000;
 const MAX_SEEN_IDS = 20000;
 const MAX_ALERTS_PER_CASE = 1000;
-const OLLAMA_MICRO_BATCH_SIZE = 15;
+const OLLAMA_MICRO_BATCH_SIZE = 8;
 const VALID_VERDICTS = ['TRUE_POSITIVE', 'NEEDS_REVIEW', 'FALSE_POSITIVE'];
 const VALID_EXCLUSION_TARGETS = [
   'path',
@@ -120,6 +120,16 @@ function defaultConfig() {
       baseUrl: 'http://localhost:11434',
       model: 'hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0',
       temperature: 0.1,
+      numCtx: 12288,
+      numPredict: 4096,
+      topP: 0.85,
+      topK: 20,
+      repeatPenalty: 1.05,
+      microBatchSize: OLLAMA_MICRO_BATCH_SIZE,
+      timeoutSec: 90,
+      keepAlive: '2m',
+      think: false,
+      useJsonSchema: true,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
     },
     exclusionRules: cloneJson(DEFAULT_EXCLUSION_RULES),
@@ -701,8 +711,12 @@ function buildWazuhIndexUrl(baseUrl, indexPattern, suffix) {
   return cleanBase + '/' + encodedIdx + suffix;
 }
 
+function stripThinkTags(rawText) {
+  return String(rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
 function parseJsonFromAiText(rawText) {
-  const s = String(rawText || '').trim();
+  const s = stripThinkTags(rawText);
   if (!s) return null;
   try {
     return JSON.parse(s);
@@ -723,6 +737,52 @@ function parseJsonFromAiText(rawText) {
     }
     return null;
   }
+}
+
+function extractTriageResultsList(rawText) {
+  const s = stripThinkTags(rawText);
+  if (!s) return null;
+  const parsed = parseJsonFromAiText(s);
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.results)) return parsed.results;
+  if (Array.isArray(parsed?.groups)) return parsed.groups;
+  if (parsed && typeof parsed === 'object' && parsed.candidate_id) return [parsed];
+
+  // Salvage complete result objects from truncated JSON output (e.g. when num_predict hits limit)
+  const salvaged = [];
+  const braceStack = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      braceStack.push(i);
+    } else if (ch === '}' && braceStack.length > 0) {
+      const start = braceStack.pop();
+      const slice = s.slice(start, i + 1);
+      if (slice.includes('"candidate_id"')) {
+        try {
+          const obj = JSON.parse(slice);
+          if (obj && typeof obj === 'object' && obj.candidate_id && !Array.isArray(obj.results)) {
+            salvaged.push(obj);
+          }
+        } catch {}
+      }
+    }
+  }
+  return salvaged.length ? salvaged : null;
 }
 
 function chunkAlertsForPromote(alerts, maxPerCase = MAX_ALERTS_PER_CASE) {
@@ -795,6 +855,45 @@ function createTriageEngine(options = {}) {
   let pollInFlight = false;
   const sseClients = new Set();
 
+  function sanitizeOllamaConfig(po = {}, base = defaultConfig().ollama) {
+    const out = { ...base };
+    if (po.baseUrl !== undefined) out.baseUrl = String(po.baseUrl || '').trim().replace(/\/+$/, '');
+    if (po.model !== undefined) out.model = String(po.model || '').trim() || defaultConfig().ollama.model;
+
+    const pickNum = (val, min, max, fallback, isInt = false) => {
+      if (val === undefined || val === null || val === '') return fallback;
+      const n = Number(val);
+      if (!Number.isFinite(n)) return fallback;
+      const clamped = Math.max(min, Math.min(max, n));
+      return isInt ? Math.round(clamped) : clamped;
+    };
+
+    out.temperature = pickNum(po.temperature, 0, 2, out.temperature, false);
+    out.numCtx = pickNum(po.numCtx ?? po.num_ctx, 2048, 131072, out.numCtx, true);
+    out.numPredict = pickNum(po.numPredict ?? po.num_predict, 256, 32768, out.numPredict, true);
+    out.topP = pickNum(po.topP ?? po.top_p, 0.05, 1, out.topP, false);
+    out.topK = pickNum(po.topK ?? po.top_k, 1, 200, out.topK, true);
+    out.repeatPenalty = pickNum(po.repeatPenalty ?? po.repeat_penalty, 0.8, 2, out.repeatPenalty, false);
+    out.microBatchSize = pickNum(po.microBatchSize ?? po.micro_batch_size, 1, 30, out.microBatchSize, true);
+    out.timeoutSec = pickNum(po.timeoutSec ?? po.timeout_sec, 15, 600, out.timeoutSec, true);
+
+    const rawKeep = po.keepAlive ?? po.keep_alive;
+    if (rawKeep !== undefined) {
+      const ka = String(rawKeep || '').trim().slice(0, 20);
+      out.keepAlive = ka || '2m';
+    }
+    if (po.think !== undefined) out.think = Boolean(po.think);
+    const rawSchema = po.useJsonSchema ?? po.use_json_schema;
+    if (rawSchema !== undefined) out.useJsonSchema = Boolean(rawSchema);
+
+    if (po.systemPrompt !== undefined) {
+      out.systemPrompt = String(po.systemPrompt || '').trim() || DEFAULT_SYSTEM_PROMPT;
+    } else if (!String(out.systemPrompt || '').trim()) {
+      out.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+    }
+    return out;
+  }
+
   function loadConfig() {
     const def = defaultConfig();
     const raw = readJsonSafe(configPath, null);
@@ -808,12 +907,7 @@ function createTriageEngine(options = {}) {
       mergedWazuh.tenantMapping = {};
     }
 
-    const mergedOllama = { ...def.ollama, ...(raw.ollama || {}) };
-    if (!String(mergedOllama.systemPrompt || '').trim()) {
-      mergedOllama.systemPrompt = DEFAULT_SYSTEM_PROMPT;
-    }
-    const temp = Number(mergedOllama.temperature);
-    mergedOllama.temperature = Number.isFinite(temp) ? Math.max(0, Math.min(2, temp)) : 0.1;
+    const mergedOllama = sanitizeOllamaConfig(raw.ollama || {}, def.ollama);
 
     const rules = Array.isArray(raw.exclusionRules)
       ? raw.exclusionRules.map((r, i) => sanitizeExclusionRule(r, i)).filter(Boolean)
@@ -1187,7 +1281,7 @@ function createTriageEngine(options = {}) {
     return run;
   }
 
-  async function runOllamaMicroBatch(tenant, candidates, existingGroupKeys = []) {
+  async function callSingleOllamaBatch(tenant, candidates, existingGroupKeys = [], opts = {}) {
     const o = config.ollama;
     const baseUrl = String(o.baseUrl || '').trim().replace(/\/+$/, '');
     if (!baseUrl) {
@@ -1213,6 +1307,7 @@ function createTriageEngine(options = {}) {
     const promptLines = [
       `Tenant target: "${tenant}". Semua kandidat di bawah HANYA milik tenant "${tenant}".`,
       'Tugas: Klasifikasikan tiap candidate_id (TRUE_POSITIVE | NEEDS_REVIEW | FALSE_POSITIVE) dan berikan group_key semantik agar kampanye serangan sejenis (mis. scanning /.env lintas agent) bisa menyatu, sementara trafik legit (mis. /login.php, /mhs/nim) terpisah walau rule_id sama.',
+      'Buat ai_reasoning ringkas (maksimal 1-2 kalimat singkat & padat) dan pastikan JSON tertutup lengkap.',
       'Format JSON WAJIB:',
       '{"results":[{"candidate_id":"...","verdict":"TRUE_POSITIVE|NEEDS_REVIEW|FALSE_POSITIVE","group_key":"slug-singkat","incident_title":"Judul insiden ringkas","ai_reasoning":"Alasan teknis singkat"}]}',
     ];
@@ -1226,20 +1321,20 @@ function createTriageEngine(options = {}) {
 
     const res = await withOllamaLock(() => requestJson(baseUrl + '/api/chat', {
       method: 'POST',
-      timeoutMs: 90000,
+      timeoutMs: (Number(o.timeoutSec) || 90) * 1000,
       body: {
         model: o.model,
         stream: false,
-        think: false,
-        keep_alive: '2m',
-        format: TRIAGE_RESPONSE_SCHEMA,
+        think: Boolean(o.think),
+        keep_alive: String(o.keepAlive || '2m'),
+        format: (opts.useJsonMode || o.useJsonSchema === false) ? 'json' : TRIAGE_RESPONSE_SCHEMA,
         options: {
           temperature: Number(o.temperature ?? 0.1),
-          num_ctx: 12288,
-          num_predict: 2048,
-          top_p: 0.85,
-          top_k: 20,
-          repeat_penalty: 1.05,
+          num_ctx: Number(o.numCtx || 12288),
+          num_predict: Number(o.numPredict || 4096),
+          top_p: Number(o.topP ?? 0.85),
+          top_k: Number(o.topK ?? 20),
+          repeat_penalty: Number(o.repeatPenalty ?? 1.05),
         },
         messages: [
           { role: 'system', content: o.systemPrompt || DEFAULT_SYSTEM_PROMPT },
@@ -1248,14 +1343,18 @@ function createTriageEngine(options = {}) {
       },
     }));
 
-    const content = res.json?.message?.content ?? res.json?.response ?? '';
-    const parsed = parseJsonFromAiText(content);
-    const list = Array.isArray(parsed)
-      ? parsed
-      : (Array.isArray(parsed?.results) ? parsed.results : (Array.isArray(parsed?.groups) ? parsed.groups : null));
+    const content = String(res.json?.message?.content ?? res.json?.response ?? '').trim();
+    const thinking = String(res.json?.message?.thinking ?? '').trim();
+    let list = extractTriageResultsList(content);
+    if (!list && thinking) {
+      list = extractTriageResultsList(thinking);
+    }
 
     if (!list) {
-      throw new Error('Respons Ollama bukan JSON array/results valid');
+      const reason = res.json?.done_reason || (content ? 'malformed' : 'empty');
+      const err = new Error(`Respons Ollama bukan JSON array/results valid (${reason}, len=${content.length})`);
+      err.isAiFormatError = true;
+      throw err;
     }
 
     const byCandidateId = new Map();
@@ -1263,7 +1362,38 @@ function createTriageEngine(options = {}) {
       const cid = String(item?.candidate_id || item?.id || '').trim();
       if (cid) byCandidateId.set(cid, item);
     }
+    if (!byCandidateId.size) {
+      const err = new Error('Respons Ollama tidak memuat candidate_id valid');
+      err.isAiFormatError = true;
+      throw err;
+    }
     return byCandidateId;
+  }
+
+  async function runOllamaMicroBatch(tenant, candidates, existingGroupKeys = []) {
+    try {
+      const byCandidateId = await callSingleOllamaBatch(tenant, candidates, existingGroupKeys, { useJsonMode: false });
+      const missing = candidates.filter((c) => !byCandidateId.has(c.candidateId));
+      if (missing.length > 0 && missing.length < candidates.length) {
+        try {
+          const recovered = await callSingleOllamaBatch(tenant, missing, existingGroupKeys, { useJsonMode: true });
+          for (const [k, v] of recovered.entries()) byCandidateId.set(k, v);
+        } catch {}
+      }
+      return byCandidateId;
+    } catch (err) {
+      if (!err?.isAiFormatError) throw err;
+      if (candidates.length > 1) {
+        const mid = Math.ceil(candidates.length / 2);
+        const merged = new Map();
+        const left = await callSingleOllamaBatch(tenant, candidates.slice(0, mid), existingGroupKeys, { useJsonMode: true });
+        for (const [k, v] of left.entries()) merged.set(k, v);
+        const right = await callSingleOllamaBatch(tenant, candidates.slice(mid), existingGroupKeys, { useJsonMode: true });
+        for (const [k, v] of right.entries()) merged.set(k, v);
+        return merged;
+      }
+      return callSingleOllamaBatch(tenant, candidates, existingGroupKeys, { useJsonMode: true });
+    }
   }
 
   function recomputeGroupMetadata(group) {
@@ -1481,9 +1611,10 @@ function createTriageEngine(options = {}) {
       const aiMap = new Map();
       const chunkErrors = new Map();
 
-      for (let i = 0; i < candidates.length; i += OLLAMA_MICRO_BATCH_SIZE) {
+      const batchSize = Math.max(1, Math.min(30, Number(config.ollama?.microBatchSize || OLLAMA_MICRO_BATCH_SIZE)));
+      for (let i = 0; i < candidates.length; i += batchSize) {
         if (isAborted()) return { analyzedCount, aborted: true };
-        const chunk = candidates.slice(i, i + OLLAMA_MICRO_BATCH_SIZE);
+        const chunk = candidates.slice(i, i + batchSize);
         try {
           const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
           for (const [cid, val] of partMap.entries()) aiMap.set(cid, val);
@@ -1744,16 +1875,7 @@ function createTriageEngine(options = {}) {
     }
 
     if (patch.ollama && typeof patch.ollama === 'object') {
-      const po = patch.ollama;
-      if (po.baseUrl !== undefined) next.ollama.baseUrl = String(po.baseUrl || '').trim().replace(/\/+$/, '');
-      if (po.model !== undefined) next.ollama.model = String(po.model || '').trim() || defaultConfig().ollama.model;
-      if (po.temperature !== undefined) {
-        const t = Number(po.temperature);
-        next.ollama.temperature = Number.isFinite(t) ? Math.max(0, Math.min(2, t)) : 0.1;
-      }
-      if (po.systemPrompt !== undefined) {
-        next.ollama.systemPrompt = String(po.systemPrompt || '').trim() || DEFAULT_SYSTEM_PROMPT;
-      }
+      next.ollama = sanitizeOllamaConfig(patch.ollama, next.ollama);
     }
 
     if (Array.isArray(patch.exclusionRules)) {
@@ -2385,20 +2507,20 @@ function createTriageEngine(options = {}) {
 
     const res = await withOllamaLock(() => requestJson(baseUrl + '/api/chat', {
       method: 'POST',
-      timeoutMs: 90000,
+      timeoutMs: (Number(o.timeoutSec) || 90) * 1000,
       body: {
         model: o.model,
         stream: false,
-        think: false,
-        keep_alive: '2m',
-        format: EXCLUSION_SUGGEST_SCHEMA,
+        think: Boolean(o.think),
+        keep_alive: String(o.keepAlive || '2m'),
+        format: o.useJsonSchema === false ? 'json' : EXCLUSION_SUGGEST_SCHEMA,
         options: {
-          temperature: 0.1,
-          num_ctx: 8192,
-          num_predict: 1024,
-          top_p: 0.85,
-          top_k: 20,
-          repeat_penalty: 1.05,
+          temperature: Number(o.temperature ?? 0.1),
+          num_ctx: Math.min(Number(o.numCtx || 12288), 16384),
+          num_predict: Math.min(Number(o.numPredict || 4096), 4096),
+          top_p: Number(o.topP ?? 0.85),
+          top_k: Number(o.topK ?? 20),
+          repeat_penalty: Number(o.repeatPenalty ?? 1.05),
         },
         messages: [
           { role: 'system', content: sysPrompt },
@@ -2724,13 +2846,14 @@ function createTriageEngine(options = {}) {
         });
         if (runEpoch !== batch24hEpoch) return;
 
+        const batchSize24 = Math.max(1, Math.min(30, Number(config.ollama?.microBatchSize || OLLAMA_MICRO_BATCH_SIZE)));
         let totalCandidates = 0;
         let totalChunks = 0;
         for (const bucketMap of byTenantBuckets.values()) {
           const n = bucketMap.size;
           if (n > 0) {
             totalCandidates += n;
-            totalChunks += Math.ceil(n / OLLAMA_MICRO_BATCH_SIZE);
+            totalChunks += Math.ceil(n / batchSize24);
           }
         }
 
