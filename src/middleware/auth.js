@@ -316,7 +316,7 @@ function createAuthStore(options = {}) {
     if (preHashed) {
       if (!isValidPasswordHash(preHashed)) {
         throw Object.assign(
-          new Error('ADMIN_PASSWORD_HASH tidak valid (gunakan format scrypt$<salt>$<hash> dari: node auth.js hash <password>)'),
+          new Error('ADMIN_PASSWORD_HASH tidak valid (gunakan format scrypt$<salt>$<hash> dari: node src/middleware/auth.js hash <password>)'),
           { status: 400 },
         );
       }
@@ -661,8 +661,8 @@ if (require.main === module) {
       process.exit(0);
     }
     console.error('Penggunaan:');
-    console.error('  node auth.js hash <password-min-6-karakter>   -> ADMIN_PASSWORD_HASH (scrypt)');
-    console.error('  node auth.js hash-secret <api-secret>          -> APPROVAL_API_SECRET_HASH (sha256)');
+    console.error('  node src/middleware/auth.js hash <password-min-6-karakter>   -> ADMIN_PASSWORD_HASH (scrypt)');
+    console.error('  node src/middleware/auth.js hash-secret <api-secret>          -> APPROVAL_API_SECRET_HASH (sha256)');
     process.exit(1);
   } catch (err) {
     console.error('Error:', err.message);

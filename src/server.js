@@ -14,12 +14,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const numbering = require('./numbering.js');
-const db = require('./db.js');
-const auth = require('./auth.js');
-const { createTriageEngine } = require('./triage.js');
+const numbering = require('./services/numbering.js');
+const db = require('./config/db.js');
+const auth = require('./middleware/auth.js');
+const { createTriageEngine } = require('./services/triage.js');
 
-const ROOT = __dirname;
+const ROOT = path.resolve(__dirname, '..');
 
 function loadEnvFallback(filePath) {
   if (typeof process.loadEnvFile === 'function') {
@@ -62,17 +62,17 @@ const DEFAULT_APPROVAL_RESUME_TIMEOUT_MS = 45000;
 const WORKSPACES = ['asoc', 'soc'];
 
 const APP_FILES = {
-  '/': 'index.html',
-  '/index.html': 'index.html',
-  '/styles.css': 'styles.css',
-  '/tenants.css': 'tenants.css',
-  '/app.js': 'app.js',
-  '/triage-ui.js': 'triage-ui.js',
-  '/extract.js': 'extract.js',
-  '/numbering.js': 'numbering.js',
-  '/config.js': 'config.js',
-  '/favicon.svg': 'favicon.svg',
-  '/favicon.ico': 'favicon.svg',
+  '/': 'public/index.html',
+  '/index.html': 'public/index.html',
+  '/css/styles.css': 'public/css/styles.css',
+  '/css/tenants.css': 'public/css/tenants.css',
+  '/js/app.js': 'public/js/app.js',
+  '/js/triage-ui.js': 'public/js/triage-ui.js',
+  '/js/extract.js': 'src/services/extract.js',
+  '/js/numbering.js': 'src/services/numbering.js',
+  '/config.js': 'src/config/config.js',
+  '/favicon.svg': 'public/favicon.svg',
+  '/favicon.ico': 'public/favicon.svg',
 };
 
 const MIME = {
@@ -2710,6 +2710,16 @@ function createServer(options = {}) {
         if (method === 'POST' && pathname === '/api/triage/merge') {
           const body = await readJsonBody(req);
           const result = triage.mergeGroups(body?.groupIds || []);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/split') {
+          const body = await readJsonBody(req);
+          const result = triage.splitGroupAlerts(body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/remove-alerts') {
+          const body = await readJsonBody(req);
+          const result = triage.removeAlertsFromGroup(body || {});
           return sendJson(res, method, 200, result);
         }
         if (method === 'POST' && pathname === '/api/triage/dismiss') {

@@ -3,7 +3,7 @@
 
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { createServer, lanUrls, isLocalHostname, isVirtualInterface } = require('../server.js');
+const { createServer, lanUrls, isLocalHostname, isVirtualInterface } = require('../src/server.js');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,18 +59,34 @@ async function main() {
       assert.match(root.body, /Diptera/);
       assert.match(root.body, /config\.js/);
 
-      const app = await request(port, '/app.js');
+      const app = await request(port, '/js/app.js');
       assert.equal(app.status, 200);
       assert.match(app.headers['content-type'] || '', /javascript/);
       assert.match(app.body, /Diptera/);
 
-      const css = await request(port, '/styles.css');
+      const triageUi = await request(port, '/js/triage-ui.js');
+      assert.equal(triageUi.status, 200);
+      assert.match(triageUi.headers['content-type'] || '', /javascript/);
+
+      const extractJs = await request(port, '/js/extract.js');
+      assert.equal(extractJs.status, 200);
+      assert.match(extractJs.headers['content-type'] || '', /javascript/);
+
+      const numberingJs = await request(port, '/js/numbering.js');
+      assert.equal(numberingJs.status, 200);
+      assert.match(numberingJs.headers['content-type'] || '', /javascript/);
+
+      const css = await request(port, '/css/styles.css');
       assert.equal(css.status, 200);
       assert.match(css.headers['content-type'] || '', /text\/css/);
 
-      const tenantsCss = await request(port, '/tenants.css');
+      const tenantsCss = await request(port, '/css/tenants.css');
       assert.equal(tenantsCss.status, 200);
       assert.match(tenantsCss.headers['content-type'] || '', /text\/css/);
+
+      const favicon = await request(port, '/favicon.svg');
+      assert.equal(favicon.status, 200);
+      assert.match(favicon.headers['content-type'] || '', /svg/);
     });
 
     await test('/healthz membalas ok', async () => {
@@ -101,7 +117,7 @@ async function main() {
     });
 
     await test('file di luar whitelist & path traversal ditolak', async () => {
-      for (const p of ['/package.json', '/node_modules/jsdom/package.json', '/../package.json', '/test/e2e.test.js']) {
+      for (const p of ['/package.json', '/src/server.js', '/node_modules/jsdom/package.json', '/../package.json', '/test/e2e.test.js']) {
         const res = await request(port, p);
         assert.equal(res.status, 404, p + ' harus 404');
       }

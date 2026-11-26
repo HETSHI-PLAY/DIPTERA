@@ -7,9 +7,9 @@ const path = require('node:path');
 const http = require('node:http');
 const { execFileSync } = require('node:child_process');
 
-const db = require('../db.js');
-const auth = require('../auth.js');
-const { createServer, createStore } = require('../server.js');
+const db = require('../src/config/db.js');
+const auth = require('../src/middleware/auth.js');
+const { createServer, createStore } = require('../src/server.js');
 
 function req(port, method, urlPath, body, cookie = '', extraHeaders = {}) {
   return new Promise((resolve, reject) => {
@@ -469,7 +469,7 @@ function createMockPgPool() {
     assert.ok(html.includes('id="auth-screen"'));
     assert.ok(html.includes('id="user-modal"'));
     assert.ok(html.includes('Analis / Reviewer'));
-    const js = (await req(port, 'GET', '/app.js')).text;
+    const js = (await req(port, 'GET', '/js/app.js')).text;
     assert.ok(js.includes('handleLoginSubmit'));
     assert.ok(js.includes('handleCreateUser'));
     assert.ok(js.includes('createdByName'));
@@ -477,14 +477,14 @@ function createMockPgPool() {
     assert.ok(js.includes('data-pre-kind'));
     assert.ok(js.includes('domAlreadyRendered'));
     assert.ok(js.includes('replaceChildren'));
-    const css = (await req(port, 'GET', '/styles.css')).text;
+    const css = (await req(port, 'GET', '/css/styles.css')).text;
     assert.ok(css.includes('.auth-screen'));
     assert.ok(css.includes('.modal-card'));
     assert.ok(css.includes('overscroll-behavior: contain'));
 
     // 4. Hash-only bootstrap (ADMIN_PASSWORD_HASH) & hashed API secret (APPROVAL_API_SECRET_HASH) + CLI helper
-    const cliAdminHash = execFileSync('node', [path.join(__dirname, '..', 'auth.js'), 'hash', 'PreHashedAdmin!9'], { encoding: 'utf8' }).trim();
-    const cliSecretHash = execFileSync('node', [path.join(__dirname, '..', 'auth.js'), 'hash-secret', 'hashed-n8n-secret'], { encoding: 'utf8' }).trim();
+    const cliAdminHash = execFileSync('node', [path.join(__dirname, '..', 'src', 'middleware', 'auth.js'), 'hash', 'PreHashedAdmin!9'], { encoding: 'utf8' }).trim();
+    const cliSecretHash = execFileSync('node', [path.join(__dirname, '..', 'src', 'middleware', 'auth.js'), 'hash-secret', 'hashed-n8n-secret'], { encoding: 'utf8' }).trim();
     assert.equal(auth.isValidPasswordHash(cliAdminHash), true);
     assert.ok(cliSecretHash.startsWith('sha256$'));
     assert.equal(auth.verifyApiSecretHash('hashed-n8n-secret', cliSecretHash), true);
@@ -548,9 +548,13 @@ function createMockPgPool() {
       'data/server-config.json',
       'docker-compose.override.yml',
       'Alpha Reporter v2 (1).json',
+      'workflows/Alpha Reporter v2 (1).json',
       'finding.md',
+      'docs/finding.md',
       'update.md',
-      'Dokumentasi Diptera.md'
+      'docs/update.md',
+      'Dokumentasi Diptera.md',
+      'docs/Dokumentasi Diptera.md'
     ]) {
       assert.equal(checkIgnored(sensitive), true, `${sensitive} must be ignored by .gitignore`);
     }

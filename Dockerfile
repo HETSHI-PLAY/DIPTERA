@@ -11,7 +11,8 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY index.html styles.css tenants.css favicon.svg app.js triage-ui.js extract.js numbering.js config.js db.js auth.js triage.js server.js ./
+COPY src/ ./src/
+COPY public/ ./public/
 
 RUN mkdir -p /app/data && chown -R node:node /app
 
@@ -22,4 +23,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 USER node
 
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]

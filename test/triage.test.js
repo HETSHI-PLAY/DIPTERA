@@ -8,8 +8,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
-const { createServer } = require('../server.js');
-const { evaluateExclusions, chunkAlertsForPromote } = require('../triage.js');
+const { createServer } = require('../src/server.js');
+const { evaluateExclusions, chunkAlertsForPromote } = require('../src/services/triage.js');
 
 function httpJson(url, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -322,6 +322,16 @@ async function main() {
     // Strict single-concurrency lock & per-tenant micro-batches (2 tenants = 2 Ollama calls)
     assert.equal(maxConcurrentOllamaCalls, 1);
     assert.equal(ollamaRequests.length, 2);
+    const firstOllamaReq = ollamaRequests[0];
+    assert.equal(firstOllamaReq.think, false);
+    assert.equal(firstOllamaReq.keep_alive, '2m');
+    assert.equal(typeof firstOllamaReq.format, 'object');
+    assert.ok(firstOllamaReq.format?.properties?.results);
+    assert.equal(firstOllamaReq.options.num_ctx, 12288);
+    assert.equal(firstOllamaReq.options.num_predict, 2048);
+    assert.equal(firstOllamaReq.options.top_p, 0.85);
+    assert.equal(firstOllamaReq.options.top_k, 20);
+    assert.equal(firstOllamaReq.options.repeat_penalty, 1.05);
 
     const groups = pollRes.json.snapshot.groups;
     assert.equal(groups.length, 4); // instiki TP (2 agents merged), instiki FP, instiki REVIEW, pradita TP
@@ -444,7 +454,103 @@ async function main() {
     const rePoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
     assert.equal(rePoll.json.analyzedCount, 0);
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (9/9)');
+    // 10. Burst pre-grouping, micro-batch chunking (>15 candidates), Split Alert, & Remove Alert
+    ollamaMode = 'smart';
+    ollamaRequests = [];
+    const burstHits = [];
+    // 6 different source IPs hitting SAME (instiki, rule 31151, /.env) -> must pre-group into 1 candidate with <=3 samples
+    for (let i = 1; i <= 6; i++) {
+      burstHits.push({
+        _id: `w-burst-${i}`,
+        _source: {
+          '@timestamp': `2029-11-26T10:00:0${i}.000Z`,
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+          agent: { id: `00${i}`, name: `instiki-edge-0${i}` },
+          data: { srcip: `198.51.100.${i}`, url: '/.env', http_status: '404' },
+          full_log: `198.51.100.${i} "GET /.env HTTP/1.1" 404 "l9scan/${i}.0"`,
+        },
+      });
+    }
+    // 16 distinct normalized paths -> combined with burst = 17 candidates -> must split into 2 Ollama calls (15 + 2)
+    for (let i = 1; i <= 16; i++) {
+      burstHits.push({
+        _id: `w-chunk-${i}`,
+        _source: {
+          '@timestamp': `2029-11-26T10:01:${String(i).padStart(2, '0')}.000Z`,
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+          agent: { id: '001', name: 'instiki-web-01' },
+          data: { srcip: '203.0.113.50', url: `/apps/form/step-${i}?typo-legit=1`, http_status: '400' },
+          full_log: `203.0.113.50 "GET /apps/form/step-${i}?typo-legit=1 HTTP/1.1" 400 "Mozilla/5.0"`,
+        },
+      });
+    }
+    mockWazuhHits.push(...burstHits);
+
+    const burstPoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
+    assert.equal(burstPoll.status, 200);
+    assert.equal(burstPoll.json.analyzedCount, 22);
+    assert.equal(maxConcurrentOllamaCalls, 1);
+    assert.equal(ollamaRequests.length, 2); // chunked 15 + 2
+
+    const burstReqBody = ollamaRequests[0].messages.find((m) => m.role === 'user').content;
+    const burstCands = JSON.parse(burstReqBody.slice(burstReqBody.indexOf('Kandidat batch:\n') + 'Kandidat batch:\n'.length));
+    const compressedEnvCand = burstCands.find((c) => c.normalized_path === '/.env');
+    assert.ok(compressedEnvCand, 'Burst /.env alerts must compress into 1 candidate');
+    assert.equal(compressedEnvCand.alert_count, 6);
+    assert.equal(compressedEnvCand.source_ip_count, 6);
+    assert.ok(compressedEnvCand.source_ips.length <= 5);
+    assert.ok(compressedEnvCand.samples.length <= 3);
+    assert.equal(compressedEnvCand.http_statuses['404'], 6);
+
+    const tpBurstGroup = burstPoll.json.snapshot.groups.find((g) => g.verdict === 'TRUE_POSITIVE' && g.tenant_mapped === 'instiki');
+    assert.ok(tpBurstGroup && tpBurstGroup.alert_count === 6);
+
+    // Split 2 alerts out into a new group
+    const wmBeforeSplit = burstPoll.json.snapshot.watermarkTimestamp;
+    const splitRes = await httpJson(`${baseUrl}/api/triage/split`, {
+      method: 'POST',
+      body: { groupId: tpBurstGroup.group_id, alertIds: ['w-burst-1', 'w-burst-2'], incidentTitle: 'Sub-insiden Terpisah' },
+    });
+    assert.equal(splitRes.status, 200);
+    assert.equal(splitRes.json.sourceGroup.alert_count, 4);
+    assert.equal(splitRes.json.newGroup.alert_count, 2);
+    assert.equal(splitRes.json.newGroup.tenant_mapped, 'instiki');
+    assert.equal(splitRes.json.newGroup.incident_title, 'Sub-insiden Terpisah');
+    assert.equal(splitRes.json.snapshot.watermarkTimestamp, wmBeforeSplit);
+
+    // Splitting all remaining alerts in a group must fail with 400
+    const badSplit = await httpJson(`${baseUrl}/api/triage/split`, {
+      method: 'POST',
+      body: { groupId: splitRes.json.newGroup.group_id, alertIds: ['w-burst-1', 'w-burst-2'] },
+    });
+    assert.equal(badSplit.status, 400);
+
+    // Remove 1 alert from split group -> count becomes 1, live feed shows Dismissed
+    const remOne = await httpJson(`${baseUrl}/api/triage/remove-alerts`, {
+      method: 'POST',
+      body: { groupId: splitRes.json.newGroup.group_id, alertIds: ['w-burst-1'] },
+    });
+    assert.equal(remOne.status, 200);
+    assert.equal(remOne.json.removedCount, 1);
+    assert.equal(remOne.json.groupRemoved, false);
+    assert.equal(remOne.json.group.alert_count, 1);
+
+    const liveAfterRem = await httpJson(`${baseUrl}/api/triage/live?scope=24h`);
+    const remLive = liveAfterRem.json.items.find((i) => i.alert_id === 'w-burst-1');
+    assert.match(remLive.status_label, /Dismissed/);
+
+    // Remove last alert -> groupRemoved === true & re-poll does not revive w-burst-1/2
+    const remLast = await httpJson(`${baseUrl}/api/triage/remove-alerts`, {
+      method: 'POST',
+      body: { groupId: splitRes.json.newGroup.group_id, alertIds: ['w-burst-2'] },
+    });
+    assert.equal(remLast.status, 200);
+    assert.equal(remLast.json.groupRemoved, true);
+
+    const postRemovePoll = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'poll_now' } });
+    assert.equal(postRemovePoll.json.analyzedCount, 0);
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (10/10)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

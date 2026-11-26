@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const X = require('../extract.js');
+const X = require('../src/services/extract.js');
 
 const fixtures = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 

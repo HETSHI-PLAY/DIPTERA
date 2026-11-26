@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-const { createServer } = require('../server.js');
+const { createServer } = require('../src/server.js');
 
 function req(port, method, urlPath, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
@@ -448,7 +448,7 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     assert.ok(htmlRes.text.includes('id="approvals-list"'));
     assert.ok(htmlRes.text.includes('id="rejection-banner"'));
 
-    const jsRes = await req(port, 'GET', '/app.js');
+    const jsRes = await req(port, 'GET', '/js/app.js');
     assert.equal(jsRes.status, 200);
     assert.ok(jsRes.text.includes('submitApprovalDecision'));
     assert.ok(jsRes.text.includes('renderApprovalsList'));
@@ -456,13 +456,13 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
     assert.ok(jsRes.text.includes('completeRejection'));
     assert.ok(jsRes.text.includes('markApprovalRevised'));
 
-    const cssRes = await req(port, 'GET', '/styles.css');
+    const cssRes = await req(port, 'GET', '/css/styles.css');
     assert.equal(cssRes.status, 200);
     assert.ok(cssRes.text.includes('.approval-card'));
     assert.ok(cssRes.text.includes('.rejection-banner'));
 
     // 8. Validate Alpha Reporter v2 (1).json structure and IF expressions (if present locally)
-    const wfPath = path.join(__dirname, '..', 'Alpha Reporter v2 (1).json');
+    const wfPath = path.join(__dirname, '..', 'workflows', 'Alpha Reporter v2 (1).json');
     if (fs.existsSync(wfPath)) {
       const wf = JSON.parse(fs.readFileSync(wfPath, 'utf8'));
       const byName = new Map(wf.nodes.map((n) => [n.name, n]));

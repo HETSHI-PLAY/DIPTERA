@@ -116,10 +116,23 @@ function listen(server) {
   });
 }
 
+const E2E_STATIC_MAP = {
+  '/': 'public/index.html',
+  '/index.html': 'public/index.html',
+  '/css/styles.css': 'public/css/styles.css',
+  '/css/tenants.css': 'public/css/tenants.css',
+  '/js/app.js': 'public/js/app.js',
+  '/js/triage-ui.js': 'public/js/triage-ui.js',
+  '/js/extract.js': 'src/services/extract.js',
+  '/js/numbering.js': 'src/services/numbering.js',
+  '/config.js': 'src/config/config.js',
+  '/favicon.svg': 'public/favicon.svg',
+};
+
 async function startStaticServer(root) {
   const server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    const rel = (urlPath === '/' ? '/index.html' : urlPath).replace(/^\/+/, '');
+    const rel = E2E_STATIC_MAP[urlPath] || path.posix.join('public', urlPath.replace(/^\/+/, ''));
     const full = path.join(root, rel);
     if (!full.startsWith(root)) {
       res.writeHead(403);

@@ -3,9 +3,11 @@
   "version": "2.0.0",
   "private": true,
   "description": "Diptera ASOC — Multi-form SOC intake untuk Alpha Reporter (n8n) dengan Auto-IRIS Case ID, shared counter/riwayat, dan mode Reporting/Repeating.",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js",
-    "hash-credential": "node auth.js",
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "hash-credential": "node src/middleware/auth.js",
     "test": "node test/diptera-unified.test.js && node test/approvals.test.js && node test/numbering.test.js && node test/extract.test.js && node test/server.test.js && node test/auth.test.js && node test/triage.test.js"
   },
   "dependencies": {

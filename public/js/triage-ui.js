@@ -21,6 +21,7 @@
     search: '',
     selectedGroupIds: new Set(),
     expandedGroupIds: new Set(),
+    selectedSubAlertsByGroup: new Map(),
     liveData: null,
     liveScope: 'watermark',
     liveAutoRefresh: true,
@@ -418,6 +419,60 @@
     }
   }
 
+  function getSelectedSubAlerts(groupId) {
+    let set = triageState.selectedSubAlertsByGroup.get(groupId);
+    if (!set) {
+      set = new Set();
+      triageState.selectedSubAlertsByGroup.set(groupId, set);
+    }
+    return set;
+  }
+
+  async function splitGroupAlertsUi(groupId, alertIds) {
+    const ids = [...new Set((alertIds || []).filter(Boolean))];
+    if (!ids.length) return;
+    try {
+      const res = await B.apiFetch('/api/triage/split', {
+        method: 'POST',
+        body: JSON.stringify({ groupId, alertIds: ids }),
+      });
+      triageState.selectedSubAlertsByGroup.delete(groupId);
+      if (res.newGroup?.group_id) triageState.expandedGroupIds.add(res.newGroup.group_id);
+      if (res.snapshot) triageState.snapshot = res.snapshot;
+      renderTriageView();
+      B.toast({
+        type: 'success',
+        title: `${ids.length} alert dipisahkan ke grup baru`,
+        body: res.newGroup?.incident_title || '',
+      });
+    } catch (err) {
+      B.toast({ type: 'error', title: 'Gagal memisahkan alert', body: err.message });
+    }
+  }
+
+  async function removeAlertsFromGroupUi(groupId, alertIds) {
+    const ids = [...new Set((alertIds || []).filter(Boolean))];
+    if (!ids.length) return;
+    try {
+      const res = await B.apiFetch('/api/triage/remove-alerts', {
+        method: 'POST',
+        body: JSON.stringify({ groupId, alertIds: ids }),
+      });
+      triageState.selectedSubAlertsByGroup.delete(groupId);
+      if (res.snapshot) triageState.snapshot = res.snapshot;
+      renderTriageView();
+      B.toast({
+        type: 'info',
+        title: `${res.removedCount || ids.length} alert dihilangkan`,
+        body: res.groupRemoved
+          ? 'Seluruh alert habis; grup dihapus dari antrean.'
+          : 'Ditandai Dismissed dan tidak akan ditarik ulang.',
+      });
+    } catch (err) {
+      B.toast({ type: 'error', title: 'Gagal menghilangkan alert', body: err.message });
+    }
+  }
+
   function renderTriageView() {
     const snap = triageState.snapshot;
     updateSidebarBadges(snap);
@@ -443,6 +498,18 @@
     const validIds = new Set(allGroups.map((g) => g.group_id));
     for (const id of [...triageState.selectedGroupIds]) {
       if (!validIds.has(id)) triageState.selectedGroupIds.delete(id);
+    }
+    for (const [gid, set] of [...triageState.selectedSubAlertsByGroup.entries()]) {
+      const grp = allGroups.find((g) => g.group_id === gid);
+      if (!grp) {
+        triageState.selectedSubAlertsByGroup.delete(gid);
+      } else {
+        const alertSet = new Set((grp.alerts || []).map((a) => a.alert_id));
+        for (const aid of [...set]) {
+          if (!alertSet.has(aid)) set.delete(aid);
+        }
+        if (set.size === 0) triageState.selectedSubAlertsByGroup.delete(gid);
+      }
     }
 
     const visible = filterVisibleGroups(allGroups);
@@ -539,23 +606,73 @@
 
       if (isExpanded) {
         const sub = $('.triage-alerts-sublist', card);
-        for (const al of g.alerts || []) {
+        const alerts = g.alerts || [];
+        const selSet = getSelectedSubAlerts(g.group_id);
+        const selectedIds = alerts.map((a) => a.alert_id).filter((id) => selSet.has(id));
+        const allChecked = alerts.length > 0 && selectedIds.length === alerts.length;
+        const canSplitSelected = selectedIds.length > 0 && selectedIds.length < alerts.length;
+
+        const toolbar = document.createElement('div');
+        toolbar.className = 'triage-sublist-toolbar';
+        toolbar.innerHTML = `
+          <label class="triage-sublist-info">
+            <input type="checkbox" class="triage-subalert-check act-sub-select-all" ${allChecked ? 'checked' : ''} />
+            <span>${selectedIds.length ? `${selectedIds.length} dari ${alerts.length} alert dipilih` : 'Pilih alert untuk dipisah atau dihilangkan'}</span>
+          </label>
+          <div class="triage-sublist-actions">
+            <button type="button" class="btn ghost btn-xs act-sub-split-bulk" ${canSplitSelected ? '' : 'disabled'}>Pisahkan ke Grup Baru</button>
+            <button type="button" class="btn danger btn-xs act-sub-remove-bulk" ${selectedIds.length ? '' : 'disabled'}>Hilangkan Terpilih</button>
+            <button type="button" class="btn accent btn-xs act-sub-promote-bulk" ${selectedIds.length ? '' : 'disabled'}>Buat Case Terpilih</button>
+          </div>
+        `;
+        $('.act-sub-select-all', toolbar)?.addEventListener('change', (e) => {
+          selSet.clear();
+          if (e.target.checked) {
+            for (const al of alerts) selSet.add(al.alert_id);
+          }
+          renderTriageView();
+        });
+        $('.act-sub-split-bulk', toolbar)?.addEventListener('click', () => splitGroupAlertsUi(g.group_id, selectedIds));
+        $('.act-sub-remove-bulk', toolbar)?.addEventListener('click', () => removeAlertsFromGroupUi(g.group_id, selectedIds));
+        $('.act-sub-promote-bulk', toolbar)?.addEventListener('click', () => {
+          promoteFromTriage({
+            groupId: g.group_id,
+            alertIds: selectedIds,
+            workspace: B.getActiveWorkspace(),
+            resetWatermark: false,
+          });
+        });
+        sub.appendChild(toolbar);
+
+        for (const al of alerts) {
           const raw = al.raw_wazuh_alert || {};
+          const httpStatus = raw.data?.http_status || raw.data?.status || raw.data?.http?.status_code || '';
           const row = document.createElement('div');
           row.className = 'triage-subalert-row';
           row.innerHTML = `
             <div class="triage-subalert-meta">
+              <input type="checkbox" class="triage-subalert-check trg-subalert-check" ${selSet.has(al.alert_id) ? 'checked' : ''} aria-label="Pilih alert ${B.esc(al.alert_id)}" />
               <span class="mono">${B.esc(al.alert_id)}</span>
               <span>${B.esc(B.fmtWib(raw['@timestamp'] || raw.timestamp))}</span>
               <span>${B.esc(raw.agent?.name || '—')}</span>
+              ${httpStatus ? `<span class="chip">${B.esc(httpStatus)}</span>` : ''}
               <span class="mono">${B.esc(raw.data?.url || raw.data?.srcip || '')}</span>
             </div>
             <div class="triage-subalert-actions">
               <button type="button" class="btn ghost btn-xs act-sub-json">Raw JSON</button>
+              ${alerts.length > 1 ? '<button type="button" class="btn ghost btn-xs act-sub-split">Pisah</button>' : ''}
+              <button type="button" class="btn danger btn-xs act-sub-remove">Hilangkan</button>
               <button type="button" class="btn accent btn-xs act-sub-case">Buat Case Ini</button>
             </div>
           `;
+          $('.trg-subalert-check', row)?.addEventListener('change', (e) => {
+            if (e.target.checked) selSet.add(al.alert_id);
+            else selSet.delete(al.alert_id);
+            renderTriageView();
+          });
           $('.act-sub-json', row)?.addEventListener('click', () => openRawJsonModal(`Wazuh Alert ${al.alert_id}`, raw));
+          $('.act-sub-split', row)?.addEventListener('click', () => splitGroupAlertsUi(g.group_id, [al.alert_id]));
+          $('.act-sub-remove', row)?.addEventListener('click', () => removeAlertsFromGroupUi(g.group_id, [al.alert_id]));
           $('.act-sub-case', row)?.addEventListener('click', () => {
             promoteFromTriage({
               groupId: g.group_id,

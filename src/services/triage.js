@@ -13,7 +13,30 @@ const MAX_ACTIVE_GROUPS = 500;
 const MAX_CASE_HISTORY = 2000;
 const MAX_SEEN_IDS = 20000;
 const MAX_ALERTS_PER_CASE = 1000;
+const OLLAMA_MICRO_BATCH_SIZE = 15;
 const VALID_VERDICTS = ['TRUE_POSITIVE', 'NEEDS_REVIEW', 'FALSE_POSITIVE'];
+const TRIAGE_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          candidate_id: { type: 'string' },
+          verdict: { type: 'string', enum: VALID_VERDICTS },
+          group_key: { type: 'string' },
+          incident_title: { type: 'string' },
+          ai_reasoning: { type: 'string' },
+        },
+        required: ['candidate_id', 'verdict', 'group_key', 'incident_title', 'ai_reasoning'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['results'],
+  additionalProperties: false,
+};
 
 const DEFAULT_SYSTEM_PROMPT = [
   'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.',
@@ -160,6 +183,22 @@ function extractPathCandidates(rawAlert) {
   const httpMatch = fullLog.match(/(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s"']+)/i);
   if (httpMatch && httpMatch[1]) push(httpMatch[1]);
   return candidates;
+}
+
+function extractHttpStatus(rawAlert) {
+  const candidates = [
+    rawAlert?.data?.http_status,
+    rawAlert?.data?.status,
+    rawAlert?.data?.http?.status_code,
+    rawAlert?.data?.id,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? '').trim();
+    if (/^[1-5]\d{2}$/.test(s)) return s;
+  }
+  const fullLog = String(rawAlert?.full_log || '');
+  const m = fullLog.match(/HTTP\/[12](?:\.\d)?"\s+([1-5]\d\d)\b/);
+  return m ? m[1] : '';
 }
 
 function normalizePath(rawPath) {
@@ -390,7 +429,7 @@ function chunkAlertsForPromote(alerts, maxPerCase = MAX_ALERTS_PER_CASE) {
 }
 
 function createTriageEngine(options = {}) {
-  const dataDir = options.dataDir || path.join(__dirname, 'data');
+  const dataDir = options.dataDir || path.resolve(__dirname, '..', '..', 'data');
   const getKnownTenants = typeof options.getKnownTenants === 'function' ? options.getKnownTenants : () => [];
 
   const configPath = path.join(dataDir, 'server-config.json');
@@ -758,7 +797,7 @@ function createTriageEngine(options = {}) {
     return run;
   }
 
-  async function runOllamaMicroBatch(tenant, candidates) {
+  async function runOllamaMicroBatch(tenant, candidates, existingGroupKeys = []) {
     const o = config.ollama;
     const baseUrl = String(o.baseUrl || '').trim().replace(/\/+$/, '');
     if (!baseUrl) {
@@ -772,22 +811,28 @@ function createTriageEngine(options = {}) {
       rule_level: c.maxRuleLevel,
       rule_description: c.ruleDesc,
       mitre: c.mitre,
-      agent_names: c.agents.map((a) => a.name),
-      source_ips: c.sourceIps,
+      agent_names: c.agents.map((a) => a.name).slice(0, 8),
+      source_ip_count: c.sourceIps.length,
+      source_ips: c.sourceIps.slice(0, 5),
+      http_statuses: c.httpStatuses || {},
       normalized_path: c.normalizedPath,
       alert_count: c.alerts.length,
       samples: c.samples,
     }));
 
-    const userPrompt = [
+    const promptLines = [
       `Tenant target: "${tenant}". Semua kandidat di bawah HANYA milik tenant "${tenant}".`,
       'Tugas: Klasifikasikan tiap candidate_id (TRUE_POSITIVE | NEEDS_REVIEW | FALSE_POSITIVE) dan berikan group_key semantik agar kampanye serangan sejenis (mis. scanning /.env lintas agent) bisa menyatu, sementara trafik legit (mis. /login.php, /mhs/nim) terpisah walau rule_id sama.',
       'Format JSON WAJIB:',
       '{"results":[{"candidate_id":"...","verdict":"TRUE_POSITIVE|NEEDS_REVIEW|FALSE_POSITIVE","group_key":"slug-singkat","incident_title":"Judul insiden ringkas","ai_reasoning":"Alasan teknis singkat"}]}',
-      '',
-      'Kandidat batch:',
-      JSON.stringify(summaryCandidates),
-    ].join('\n');
+    ];
+    if (Array.isArray(existingGroupKeys) && existingGroupKeys.length > 0) {
+      promptLines.push(
+        `Grup aktif yang sudah ada pada tenant ini (gunakan group_key yang sama jika insiden berlanjut): ${JSON.stringify(existingGroupKeys.slice(0, 20))}`
+      );
+    }
+    promptLines.push('', 'Kandidat batch:', JSON.stringify(summaryCandidates));
+    const userPrompt = promptLines.join('\n');
 
     const res = await withOllamaLock(() => requestJson(baseUrl + '/api/chat', {
       method: 'POST',
@@ -795,8 +840,17 @@ function createTriageEngine(options = {}) {
       body: {
         model: o.model,
         stream: false,
-        format: 'json',
-        options: { temperature: Number(o.temperature ?? 0.1) },
+        think: false,
+        keep_alive: '2m',
+        format: TRIAGE_RESPONSE_SCHEMA,
+        options: {
+          temperature: Number(o.temperature ?? 0.1),
+          num_ctx: 12288,
+          num_predict: 2048,
+          top_p: 0.85,
+          top_k: 20,
+          repeat_penalty: 1.05,
+        },
         messages: [
           { role: 'system', content: o.systemPrompt || DEFAULT_SYSTEM_PROMPT },
           { role: 'user', content: userPrompt },
@@ -820,6 +874,51 @@ function createTriageEngine(options = {}) {
       if (cid) byCandidateId.set(cid, item);
     }
     return byCandidateId;
+  }
+
+  function recomputeGroupMetadata(group) {
+    const alerts = Array.isArray(group.alerts) ? group.alerts : [];
+    const agentMap = new Map();
+    const ipSet = new Set();
+    const ruleSet = new Set();
+    let maxLvl = 0;
+
+    for (const item of alerts) {
+      const raw = item?.raw_wazuh_alert || {};
+      const agId = String(raw.agent?.id || '');
+      const agName = String(raw.agent?.name || '').trim();
+      if (agName) {
+        const key = agId + '|' + agName;
+        if (!agentMap.has(key)) agentMap.set(key, { id: agId, name: agName });
+      }
+      const ip = extractSrcIp(raw);
+      if (ip) ipSet.add(ip);
+      const rid = String(raw.rule?.id || '').trim();
+      if (rid) ruleSet.add(rid);
+      const lvl = Number(raw.rule?.level || 0);
+      if (lvl > maxLvl) maxLvl = lvl;
+    }
+
+    group.agents = [...agentMap.values()];
+    group.agent_name = group.agents.map((a) => a.name).join(', ');
+    group.source_ips = [...ipSet];
+    group.rule_ids = [...ruleSet];
+    group.max_rule_level = maxLvl;
+    group.severity_label = severityLabel(maxLvl);
+    group.alert_count = alerts.length;
+
+    const times = alerts
+      .map((a) => extractAlertTimestamp(a.raw_wazuh_alert))
+      .filter(Boolean)
+      .sort((a, b) => Date.parse(a) - Date.parse(b));
+    if (times.length) {
+      group.first_seen = times[0];
+      group.last_seen = times[times.length - 1];
+    } else {
+      group.first_seen = null;
+      group.last_seen = null;
+    }
+    return group;
   }
 
   function mergeAlertWrappersIntoGroup(targetGroup, incoming) {
@@ -891,8 +990,10 @@ function createTriageEngine(options = {}) {
       const srcIp = extractSrcIp(raw) || 'none';
       const pathCands = extractPathCandidates(raw);
       const normPath = normalizePath(pathCands[0] || '') || 'none';
+      const httpStatus = extractHttpStatus(raw);
+      const ua = extractUserAgent(raw);
 
-      const bucketKey = [tenant, ruleId, agentName, srcIp, normPath].join('|');
+      const bucketKey = [tenant, ruleId, normPath].join('|');
       if (!byTenantBuckets.has(tenant)) byTenantBuckets.set(tenant, new Map());
       const tenantMap = byTenantBuckets.get(tenant);
 
@@ -905,17 +1006,22 @@ function createTriageEngine(options = {}) {
           mitre: raw.rule?.mitre || null,
           maxRuleLevel: ruleLevel,
           normalizedPath: normPath === 'none' ? '' : normPath,
+          httpStatuses: {},
           agents: [],
           sourceIps: [],
           alerts: [],
           samples: [],
           _agentKeys: new Set(),
           _ipKeys: new Set(),
+          _sampleKeys: new Set(),
         });
       }
 
       const cand = tenantMap.get(bucketKey);
       cand.maxRuleLevel = Math.max(cand.maxRuleLevel, ruleLevel);
+      if (httpStatus) {
+        cand.httpStatuses[httpStatus] = (cand.httpStatuses[httpStatus] || 0) + 1;
+      }
       const agKey = agentId + '|' + agentName;
       if (!cand._agentKeys.has(agKey)) {
         cand._agentKeys.add(agKey);
@@ -926,11 +1032,15 @@ function createTriageEngine(options = {}) {
         cand.sourceIps.push(srcIp);
       }
       cand.alerts.push({ alert_id: id, raw_wazuh_alert: raw });
-      if (cand.samples.length < 5) {
+      const sampleUrl = pathCands[0] || '';
+      const sampleKey = [sampleUrl, httpStatus, ua].join('|');
+      if (cand.samples.length < 3 && !cand._sampleKeys.has(sampleKey)) {
+        cand._sampleKeys.add(sampleKey);
         cand.samples.push({
-          url: pathCands[0] || '',
-          user_agent: extractUserAgent(raw),
-          full_log: String(raw.full_log || '').slice(0, 350),
+          url: sampleUrl,
+          http_status: httpStatus || undefined,
+          user_agent: ua,
+          full_log: String(raw.full_log || '').slice(0, 300),
         });
       }
     }
@@ -946,18 +1056,28 @@ function createTriageEngine(options = {}) {
       const candidates = [...bucketMap.values()];
       if (!candidates.length) continue;
 
-      let aiMap = null;
-      let fallbackErr = null;
-      try {
-        aiMap = await runOllamaMicroBatch(tenant, candidates);
-      } catch (err) {
-        fallbackErr = err.message || 'Ollama tidak terjangkau';
+      const existingGroupKeys = [
+        ...new Set(state.groups.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key)),
+      ].slice(0, 20);
+
+      const aiMap = new Map();
+      const chunkErrors = new Map();
+      for (let i = 0; i < candidates.length; i += OLLAMA_MICRO_BATCH_SIZE) {
+        const chunk = candidates.slice(i, i + OLLAMA_MICRO_BATCH_SIZE);
+        try {
+          const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
+          for (const [cid, val] of partMap.entries()) aiMap.set(cid, val);
+        } catch (err) {
+          const msg = err.message || 'Ollama tidak terjangkau';
+          for (const c of chunk) chunkErrors.set(c.candidateId, msg);
+        }
       }
 
       const mergedInTenant = new Map();
 
       for (const cand of candidates) {
-        const ai = aiMap ? aiMap.get(cand.candidateId) : null;
+        const ai = aiMap.get(cand.candidateId) || null;
+        const fallbackErr = chunkErrors.get(cand.candidateId) || null;
         const rawVerdict = String(ai?.verdict || '').trim().toUpperCase();
         const verdict = VALID_VERDICTS.includes(rawVerdict) ? rawVerdict : 'NEEDS_REVIEW';
         const unanalyzed = !ai || !VALID_VERDICTS.includes(rawVerdict);
@@ -1290,6 +1410,126 @@ function createTriageEngine(options = {}) {
     return { ok: true, group: base, snapshot: getQueueSnapshot() };
   }
 
+  function removeAlertsFromGroup({ groupId, alertIds = [] } = {}) {
+    const gid = String(groupId || '').trim();
+    if (!gid) {
+      throw Object.assign(new Error('groupId wajib diisi.'), { status: 400 });
+    }
+    const idSet = new Set((Array.isArray(alertIds) ? alertIds : []).map((x) => String(x || '').trim()).filter(Boolean));
+    if (!idSet.size) {
+      throw Object.assign(new Error('Pilih minimal 1 alert untuk dihilangkan.'), { status: 400 });
+    }
+    const grp = state.groups.find((g) => g.group_id === gid);
+    if (!grp) {
+      throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+    }
+
+    const removed = [];
+    const remaining = [];
+    for (const al of grp.alerts || []) {
+      if (idSet.has(al.alert_id)) removed.push(al);
+      else remaining.push(al);
+    }
+    if (!removed.length) {
+      throw Object.assign(new Error('Alert yang dipilih tidak ditemukan dalam grup ini.'), { status: 404 });
+    }
+
+    for (const al of removed) {
+      state.dismissedAlertIds.push(al.alert_id);
+      state.processedAlertIds.push(al.alert_id);
+    }
+
+    let groupRemoved = false;
+    if (remaining.length === 0) {
+      state.groups = state.groups.filter((g) => g.group_id !== gid);
+      groupRemoved = true;
+    } else {
+      grp.alerts = remaining;
+      recomputeGroupMetadata(grp);
+    }
+
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      removedCount: removed.length,
+      groupRemoved,
+      group: groupRemoved ? null : grp,
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
+  function splitGroupAlerts({ groupId, alertIds = [], incidentTitle = '', verdict = '' } = {}) {
+    const gid = String(groupId || '').trim();
+    if (!gid) {
+      throw Object.assign(new Error('groupId wajib diisi.'), { status: 400 });
+    }
+    const idSet = new Set((Array.isArray(alertIds) ? alertIds : []).map((x) => String(x || '').trim()).filter(Boolean));
+    if (!idSet.size) {
+      throw Object.assign(new Error('Pilih minimal 1 alert untuk dipisahkan.'), { status: 400 });
+    }
+    const grpIndex = state.groups.findIndex((g) => g.group_id === gid);
+    if (grpIndex === -1) {
+      throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+    }
+    const grp = state.groups[grpIndex];
+
+    const moved = [];
+    const remaining = [];
+    for (const al of grp.alerts || []) {
+      if (idSet.has(al.alert_id)) moved.push(al);
+      else remaining.push(al);
+    }
+    if (!moved.length) {
+      throw Object.assign(new Error('Alert yang dipilih tidak ditemukan dalam grup ini.'), { status: 404 });
+    }
+    if (!remaining.length) {
+      throw Object.assign(new Error('Tidak dapat memisahkan semua alert dari grup; sisakan minimal 1 alert di grup asal.'), { status: 400 });
+    }
+
+    grp.alerts = remaining;
+    recomputeGroupMetadata(grp);
+
+    const firstRaw = moved[0]?.raw_wazuh_alert || {};
+    const firstPath = extractPathCandidates(firstRaw)[0] || '';
+    const firstDesc = String(firstRaw.rule?.description || '').trim();
+    const fallbackTitle = firstDesc
+      ? firstDesc + (firstPath ? ' (' + normalizePath(firstPath) + ')' : '')
+      : (grp.incident_title || 'Security Incident') + ' (Dipisah)';
+
+    const reqVerdict = String(verdict || '').trim().toUpperCase();
+    const newGroup = {
+      group_id: 'grp-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + crypto.randomBytes(3).toString('hex'),
+      verdict: VALID_VERDICTS.includes(reqVerdict) ? reqVerdict : grp.verdict,
+      unanalyzed: false,
+      group_key: (grp.group_key || 'split') + '-split-' + crypto.randomBytes(2).toString('hex'),
+      incident_title: String(incidentTitle || '').trim() || fallbackTitle,
+      tenant_mapped: grp.tenant_mapped,
+      max_rule_level: 0,
+      severity_label: 'Low',
+      agents: [],
+      agent_name: '',
+      source_ips: [],
+      rule_ids: [],
+      alert_count: moved.length,
+      ai_reasoning: `Dipisahkan manual oleh analis dari grup "${grp.incident_title || grp.group_id}".`,
+      first_seen: null,
+      last_seen: null,
+      alerts: moved,
+    };
+    recomputeGroupMetadata(newGroup);
+
+    state.groups.splice(grpIndex + 1, 0, newGroup);
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      sourceGroup: grp,
+      newGroup,
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
   function dismissGroups({ groupIds = [], verdict = '' } = {}) {
     const idSet = new Set((groupIds || []).map((id) => String(id || '').trim()).filter(Boolean));
     const vFilter = String(verdict || '').trim().toUpperCase();
@@ -1436,9 +1676,10 @@ function createTriageEngine(options = {}) {
       if (grp) {
         const promotedSet = new Set(wazuhAlertIds);
         grp.alerts = (grp.alerts || []).filter((a) => !promotedSet.has(a.alert_id));
-        grp.alert_count = grp.alerts.length;
         if (grp.alerts.length === 0) {
           state.groups = state.groups.filter((g) => g.group_id !== groupId);
+        } else {
+          recomputeGroupMetadata(grp);
         }
       }
     }
@@ -1532,6 +1773,8 @@ function createTriageEngine(options = {}) {
     getLiveFeed,
     subscribeSse,
     mergeGroups,
+    splitGroupAlerts,
+    removeAlertsFromGroup,
     dismissGroups,
     resetQueue,
     promoteToCase,

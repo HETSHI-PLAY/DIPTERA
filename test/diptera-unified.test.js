@@ -6,9 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-const { createServer } = require('../server.js');
-const extract = require('../extract.js');
-const numbering = require('../numbering.js');
+const { createServer } = require('../src/server.js');
+const extract = require('../src/services/extract.js');
+const numbering = require('../src/services/numbering.js');
 
 function req(port, method, urlPath, body) {
   return new Promise((resolve, reject) => {

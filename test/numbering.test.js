@@ -2,7 +2,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const N = require('../numbering.js');
+const N = require('../src/services/numbering.js');
 
 let passed = 0;
 let failed = 0;

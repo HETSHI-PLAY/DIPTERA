@@ -61,6 +61,7 @@ Thumbs.db
 coverage/
 
 # Local n8n Workflows & Internal Docs
+workflows/
 Alpha Reporter v2 (1).json
 Alpha Reporter*.json
 Charlie Reporter*.json
