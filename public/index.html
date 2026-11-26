@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126l" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126l" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126l" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126m" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126m" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126m" />
 </head>
 
 <body>
@@ -759,6 +759,7 @@
         <section id="view-triage" class="triage-view" role="tabpanel" aria-labelledby="tab-triage" hidden>
           <div class="triage-status-bar">
             <span class="sync-pill offline" id="trg-worker-pill">Worker Pause</span>
+            <span class="sync-pill offline" id="trg-ai-pill">AI Standby</span>
             <span class="field-hint" id="trg-watermark-info">Watermark antrean: Awal</span>
             <span class="spacer"></span>
             <select id="trg-poll-range" class="triage-range-select" aria-label="Rentang waktu tarik manual">
@@ -775,12 +776,21 @@
             <button type="button" class="btn danger btn-sm" id="btn-triage-purge">Hapus Database Triage</button>
           </div>
 
+          <div id="trg-telemetry-strip" class="triage-telemetry-strip" aria-live="polite">
+            <span class="triage-tel-item"><strong>Tahap:</strong> <span id="trg-tel-phase">Siap</span></span>
+            <span class="triage-tel-item"><strong>Wazuh ditarik:</strong> <span id="trg-tel-fetched" class="mono">0</span></span>
+            <span class="triage-tel-item"><strong>Excluded:</strong> <span id="trg-tel-excluded" class="mono">0</span></span>
+            <span class="triage-tel-item"><strong>Dianalisis AI:</strong> <span id="trg-tel-analyzed" class="mono">0</span></span>
+            <span class="triage-tel-item"><strong>Model AI:</strong> <span id="trg-tel-model" class="mono">—</span></span>
+          </div>
+
           <div id="trg-poll-progress" class="triage-progress-box" hidden>
             <div class="triage-progress-head">
               <strong id="trg-poll-progress-msg">Menarik dan menganalisis alert…</strong>
+              <span id="trg-poll-progress-pct" class="mono field-hint"></span>
             </div>
             <div class="triage-progress-track" role="progressbar" aria-label="Proses penarikan AI Triage">
-              <div class="triage-progress-fill is-indeterminate"></div>
+              <div id="trg-poll-progress-fill" class="triage-progress-fill is-indeterminate"></div>
             </div>
           </div>
 
@@ -1367,11 +1377,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126l"></script>
-  <script src="/js/numbering.js?v=20261126l"></script>
-  <script src="/js/extract.js?v=20261126l"></script>
-  <script src="/js/app.js?v=20261126l"></script>
-  <script src="/js/triage-ui.js?v=20261126l"></script>
+  <script src="/config.js?v=20261126m"></script>
+  <script src="/js/numbering.js?v=20261126m"></script>
+  <script src="/js/extract.js?v=20261126m"></script>
+  <script src="/js/app.js?v=20261126m"></script>
+  <script src="/js/triage-ui.js?v=20261126m"></script>
 </body>
 
 </html>

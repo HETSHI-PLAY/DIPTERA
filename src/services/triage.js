@@ -165,12 +165,25 @@ function defaultTriageState() {
     excludedAlertMap: {},
     workerStatus: {
       running: false,
+      phase: 'idle',
+      phaseMessage: '',
+      aiActive: false,
+      aiModel: '',
+      activeTenant: '',
+      fetchedCount: 0,
+      excludedCount: 0,
+      candidateCount: 0,
+      analyzedCount: 0,
+      processedChunks: 0,
+      totalChunks: 0,
+      lastDurationMs: 0,
       lastPollAt: null,
       lastSuccessAt: null,
       lastError: null,
       lastBatchCount: 0,
       lastExcludedCount: 0,
       lastAnalyzedCount: 0,
+      nextPollAt: null,
     },
   };
 }
@@ -1105,6 +1118,39 @@ function createTriageEngine(options = {}) {
   let batch24hEpoch = 0;
   let pollInFlight = false;
   const sseClients = new Set();
+  const liveWorker = {
+    phase: 'idle',
+    phaseMessage: String(state.workerStatus?.phaseMessage || ''),
+    aiActive: false,
+    activeTenant: '',
+    fetchedCount: 0,
+    excludedCount: 0,
+    candidateCount: 0,
+    analyzedCount: 0,
+    processedChunks: 0,
+    totalChunks: 0,
+    lastDurationMs: Number(state.workerStatus?.lastDurationMs || 0),
+    nextPollAt: null,
+  };
+
+  function buildWorkerStatusSnapshot() {
+    const model = String(config.ollama?.model || '').trim();
+    const baseUrl = String(config.wazuh?.url || '').trim();
+    const ollamaUrl = String(config.ollama?.baseUrl || '').trim();
+    return {
+      ...state.workerStatus,
+      ...liveWorker,
+      running: pollInFlight,
+      aiModel: model,
+      ollamaConfigured: Boolean(ollamaUrl && model),
+      wazuhConfigured: Boolean(baseUrl),
+    };
+  }
+
+  function setLiveWorker(patch = {}, broadcast = true) {
+    Object.assign(liveWorker, patch);
+    if (broadcast) broadcastSse('worker', buildWorkerStatusSnapshot());
+  }
 
   function sanitizeOllamaConfig(po = {}, base = defaultConfig().ollama) {
     const out = { ...base };
@@ -1285,7 +1331,7 @@ function createTriageEngine(options = {}) {
     return {
       ok: true,
       workerEnabled: Boolean(config.workerEnabled),
-      workerStatus: { ...state.workerStatus, running: pollInFlight },
+      workerStatus: buildWorkerStatusSnapshot(),
       watermarkTimestamp: state.watermarkTimestamp,
       counts: summarizeCounts(state.groups),
       tenants: [...tenantsSet].sort(),
@@ -1849,6 +1895,7 @@ function createTriageEngine(options = {}) {
   async function runAiOnTenantBuckets(byTenantBuckets, hooks = {}) {
     const isAborted = typeof hooks.isAborted === 'function' ? hooks.isAborted : () => false;
     const getExistingGroupKeys = typeof hooks.getExistingGroupKeys === 'function' ? hooks.getExistingGroupKeys : () => [];
+    const onChunkStart = typeof hooks.onChunkStart === 'function' ? hooks.onChunkStart : null;
     const onChunkProgress = typeof hooks.onChunkProgress === 'function' ? hooks.onChunkProgress : null;
     const onTenantMerged = typeof hooks.onTenantMerged === 'function' ? hooks.onTenantMerged : null;
 
@@ -1868,6 +1915,13 @@ function createTriageEngine(options = {}) {
       for (let i = 0; i < candidates.length; i += batchSize) {
         if (isAborted()) return { analyzedCount, aborted: true };
         const chunk = candidates.slice(i, i + batchSize);
+        if (onChunkStart) {
+          onChunkStart({
+            tenant,
+            chunkIndex: processedChunks + 1,
+            chunkSize: chunk.length,
+          });
+        }
         try {
           const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
           for (const [cid, val] of partMap.entries()) aiMap.set(cid, val);
@@ -1876,7 +1930,8 @@ function createTriageEngine(options = {}) {
           for (const c of chunk) chunkErrors.set(c.candidateId, msg);
         }
         processedChunks++;
-        if (onChunkProgress) onChunkProgress({ tenant, processedChunks });
+        const analyzedInChunk = chunk.reduce((sum, c) => sum + (c.alerts?.length || 0), 0);
+        if (onChunkProgress) onChunkProgress({ tenant, processedChunks, analyzedInChunk });
       }
 
       if (isAborted()) return { analyzedCount, aborted: true };
@@ -1946,21 +2001,46 @@ function createTriageEngine(options = {}) {
     return { analyzedCount, aborted: false };
   }
 
-  async function processHitsIntoQueue(hits, runEpoch = null) {
+  async function processHitsIntoQueue(hits, runEpoch = null, onStage = null) {
     if (runEpoch != null && runEpoch !== pollEpoch) {
       return { excludedCount: 0, analyzedCount: 0, aborted: true };
     }
     const { excludedCount, byTenantBuckets } = preGroupByTenant(hits, { skipSeen: true, mutateExclusions: true });
+    const batchSize = Math.max(1, Math.min(30, Number(config.ollama?.microBatchSize || OLLAMA_MICRO_BATCH_SIZE)));
+    let candidateCount = 0;
+    let totalChunks = 0;
+    for (const bucketMap of byTenantBuckets.values()) {
+      candidateCount += bucketMap.size;
+      if (bucketMap.size > 0) totalChunks += Math.ceil(bucketMap.size / batchSize);
+    }
+    if (onStage) onStage('filtered', { excludedCount, candidateCount, totalChunks });
+
+    let chunkAnalyzedSum = 0;
     const { analyzedCount, aborted } = await runAiOnTenantBuckets(byTenantBuckets, {
       isAborted: () => runEpoch != null && runEpoch !== pollEpoch,
       getExistingGroupKeys: (tenant) =>
         [...new Set(state.groups.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key))].slice(0, 20),
-      onTenantMerged: ({ groupPayloads, processedAlertIds }) => {
+      onChunkStart: ({ tenant, chunkIndex, chunkSize }) => {
+        if (onStage) onStage('ai_chunk_start', { tenant, chunkIndex, totalChunks, chunkSize });
+      },
+      onChunkProgress: ({ tenant, processedChunks, analyzedInChunk }) => {
+        chunkAnalyzedSum += analyzedInChunk || 0;
+        if (onStage) {
+          onStage('ai_chunk_done', {
+            tenant,
+            processedChunks,
+            totalChunks,
+            analyzedCount: chunkAnalyzedSum,
+          });
+        }
+      },
+      onTenantMerged: ({ tenant, groupPayloads, processedAlertIds }) => {
         appendSemanticGroupsToList(state.groups, groupPayloads);
         for (const id of processedAlertIds) state.processedAlertIds.push(id);
+        if (onStage) onStage('tenant_merged', { tenant });
       },
     });
-    return { excludedCount, analyzedCount, aborted };
+    return { excludedCount, analyzedCount, candidateCount, totalChunks, aborted };
   }
 
   const POLL_RANGE_MS = {
@@ -2025,9 +2105,21 @@ function createTriageEngine(options = {}) {
       if (!String(config.wazuh.url || '').trim()) {
         return { ok: false, skipped: true, reason: 'Wazuh Indexer URL belum diatur' };
       }
+      const startedMs = Date.now();
       pollInFlight = true;
       state.workerStatus.lastPollAt = new Date().toISOString();
-      broadcastSse('worker', { running: true, lastPollAt: state.workerStatus.lastPollAt });
+      setLiveWorker({
+        phase: 'fetching_wazuh',
+        aiActive: false,
+        activeTenant: '',
+        fetchedCount: 0,
+        excludedCount: 0,
+        candidateCount: 0,
+        analyzedCount: 0,
+        processedChunks: 0,
+        totalChunks: 0,
+        phaseMessage: 'Menarik alert dari Wazuh Indexer…',
+      });
 
       try {
         const { hits } = await queryWazuhAlerts({
@@ -2041,16 +2133,87 @@ function createTriageEngine(options = {}) {
         if (runEpoch !== pollEpoch) {
           return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
         }
-        const { excludedCount, analyzedCount, aborted } = await processHitsIntoQueue(hits, runEpoch);
+
+        setLiveWorker({
+          phase: 'filtering',
+          fetchedCount: hits.length,
+          phaseMessage: `Ditarik ${hits.length} alert · menyaring aturan Exclude…`,
+        });
+
+        const { excludedCount, analyzedCount, aborted } = await processHitsIntoQueue(hits, runEpoch, (stage, info = {}) => {
+          if (stage === 'filtered') {
+            if (info.totalChunks > 0) {
+              setLiveWorker({
+                phase: 'analyzing_ai',
+                aiActive: true,
+                excludedCount: info.excludedCount,
+                candidateCount: info.candidateCount,
+                totalChunks: info.totalChunks,
+                processedChunks: 0,
+                phaseMessage: `AI Ollama menganalisis ${info.candidateCount} kandidat (${info.totalChunks} batch)…`,
+              });
+            } else {
+              setLiveWorker({
+                excludedCount: info.excludedCount,
+                candidateCount: 0,
+                totalChunks: 0,
+                phaseMessage: hits.length
+                  ? `Semua ${hits.length} alert tersaring Exclude / sudah diproses.`
+                  : 'Tidak ada alert baru pada rentang ini.',
+              });
+            }
+          } else if (stage === 'ai_chunk_start') {
+            setLiveWorker({
+              phase: 'analyzing_ai',
+              aiActive: true,
+              activeTenant: info.tenant || '',
+              totalChunks: info.totalChunks || 0,
+              phaseMessage: `AI Ollama menganalisis ${info.tenant || 'tenant'} (batch ${info.chunkIndex}/${info.totalChunks})…`,
+            });
+          } else if (stage === 'ai_chunk_done') {
+            setLiveWorker({
+              phase: 'analyzing_ai',
+              aiActive: true,
+              activeTenant: info.tenant || '',
+              processedChunks: info.processedChunks || 0,
+              totalChunks: info.totalChunks || 0,
+              analyzedCount: info.analyzedCount || 0,
+              phaseMessage: `AI Ollama selesai batch ${info.processedChunks}/${info.totalChunks} (${info.tenant || 'tenant'})…`,
+            });
+          } else if (stage === 'tenant_merged') {
+            broadcastSse('state', getQueueSnapshot());
+          }
+        });
         if (aborted || runEpoch !== pollEpoch) {
           return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
         }
+        const durationMs = Date.now() - startedMs;
+        const intervalMs = Math.max(1, Number(config.wazuh.pollIntervalMin || 3)) * 60 * 1000;
+        const nextPollIso = config.workerEnabled ? new Date(Date.now() + intervalMs).toISOString() : null;
+        const doneMsg = hits.length
+          ? `Selesai · ${hits.length} ditarik · ${excludedCount} excluded · ${analyzedCount} dianalisis AI`
+          : 'Tidak ada alert baru pada rentang ini';
+        pollInFlight = false;
         state.workerStatus.lastSuccessAt = new Date().toISOString();
         state.workerStatus.lastError = null;
         state.workerStatus.lastBatchCount = hits.length;
         state.workerStatus.lastExcludedCount = excludedCount;
         state.workerStatus.lastAnalyzedCount = analyzedCount;
+        state.workerStatus.lastDurationMs = durationMs;
+        state.workerStatus.phaseMessage = doneMsg;
+        setLiveWorker({
+          phase: 'done',
+          aiActive: false,
+          activeTenant: '',
+          fetchedCount: hits.length,
+          excludedCount,
+          analyzedCount,
+          lastDurationMs: durationMs,
+          nextPollAt: nextPollIso,
+          phaseMessage: doneMsg,
+        }, false);
         saveState();
+        broadcastSse('worker', buildWorkerStatusSnapshot());
         broadcastSse('state', getQueueSnapshot());
         return {
           ok: true,
@@ -2064,12 +2227,33 @@ function createTriageEngine(options = {}) {
         if (runEpoch !== pollEpoch) {
           return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
         }
+        const durationMs = Date.now() - startedMs;
+        const errMsg = `Gagal: ${err.message || 'Gagal polling Wazuh Indexer'}`;
+        pollInFlight = false;
         state.workerStatus.lastError = err.message || 'Gagal polling Wazuh Indexer';
+        state.workerStatus.lastDurationMs = durationMs;
+        state.workerStatus.phaseMessage = errMsg;
+        setLiveWorker({
+          phase: 'error',
+          aiActive: false,
+          activeTenant: '',
+          lastDurationMs: durationMs,
+          phaseMessage: errMsg,
+        }, false);
         saveState();
+        broadcastSse('worker', buildWorkerStatusSnapshot());
         broadcastSse('state', getQueueSnapshot());
         throw err;
       } finally {
         pollInFlight = false;
+        if (
+          liveWorker.aiActive ||
+          liveWorker.phase === 'fetching_wazuh' ||
+          liveWorker.phase === 'filtering' ||
+          liveWorker.phase === 'analyzing_ai'
+        ) {
+          setLiveWorker({ phase: 'idle', aiActive: false, activeTenant: '' });
+        }
       }
     });
 
@@ -2084,11 +2268,14 @@ function createTriageEngine(options = {}) {
     }
     if (config.workerEnabled && String(config.wazuh.url || '').trim()) {
       const intervalMs = Math.max(1, Number(config.wazuh.pollIntervalMin || 3)) * 60 * 1000;
+      liveWorker.nextPollAt = new Date(Date.now() + intervalMs).toISOString();
       pollTimer = setInterval(() => {
         if (!config.workerEnabled) return;
         pollOnce().catch(() => {});
       }, intervalMs);
       if (typeof pollTimer.unref === 'function') pollTimer.unref();
+    } else {
+      liveWorker.nextPollAt = null;
     }
   }
 

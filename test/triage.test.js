@@ -1076,6 +1076,14 @@ async function main() {
       body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:24:50.000Z', to: '2029-11-26T10:25:10.000Z', size: 10 },
     });
     assert.equal(sevPoll.status, 200);
+    const sevWs = sevPoll.json?.snapshot?.workerStatus || {};
+    assert.equal(sevWs.running, false);
+    assert.equal(sevWs.phase, 'done');
+    assert.equal(sevWs.aiActive, false);
+    assert.ok(sevWs.lastBatchCount >= 1);
+    assert.ok(sevWs.lastAnalyzedCount >= 1);
+    assert.equal(typeof sevWs.lastDurationMs, 'number');
+    assert.ok(String(sevWs.aiModel || '').length > 0);
     assert.equal(ollamaRequests.length, 1);
     const sevSys = ollamaRequests[0].messages.find((m) => m.role === 'system')?.content || '';
     const sevUser = ollamaRequests[0].messages.find((m) => m.role === 'user')?.content || '';

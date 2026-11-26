@@ -2835,6 +2835,37 @@ textarea {
   min-width: 180px;
 }
 
+.sync-pill.ai-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.triage-telemetry-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+
+.triage-tel-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+}
+
+.triage-tel-item strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
 .triage-merge-bar {
   display: flex;
   align-items: center;

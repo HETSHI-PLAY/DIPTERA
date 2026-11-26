@@ -142,11 +142,17 @@
 
   function getKnownTenantOptions(extraRules = []) {
     const set = new Set();
-    const mappings = triageState.config?.wazuh?.tenantMapping || [];
-    for (const m of mappings) {
-      if (m?.tenant) set.add(String(m.tenant).trim());
+    const mappings = triageState.config?.wazuh?.tenantMapping;
+    if (Array.isArray(mappings)) {
+      for (const m of mappings) {
+        if (m?.tenant) set.add(String(m.tenant).trim());
+      }
+    } else if (mappings && typeof mappings === 'object') {
+      for (const tenantSlug of Object.values(mappings)) {
+        if (typeof tenantSlug === 'string' && tenantSlug.trim()) set.add(tenantSlug.trim());
+      }
     }
-    for (const grp of [...(triageState.queue?.snapshot?.groups || []), ...(triageState.batch24h?.snapshot?.groups || [])]) {
+    for (const grp of [...(triageState.snapshot?.groups || []), ...(triageState.batch24h?.snapshot?.groups || [])]) {
       if (grp?.tenant_mapped) set.add(String(grp.tenant_mapped).trim());
     }
     for (const r of extraRules) {
@@ -1074,16 +1080,26 @@
 
   function updateWorkerButtonsUi() {
     const enabled = Boolean(triageState.snapshot?.workerEnabled ?? triageState.config?.workerEnabled);
-    const running = Boolean(triageState.snapshot?.workerStatus?.running);
+    const ws = triageState.snapshot?.workerStatus || {};
+    const running = Boolean(ws.running);
+    const phase = String(ws.phase || (running ? 'fetching_wazuh' : 'idle'));
+    const manualWaiting = Boolean($('#btn-triage-poll-now')?.disabled);
+
     const btn = $('#btn-triage-worker-toggle');
     if (btn) {
       btn.textContent = enabled ? 'Pause Worker' : 'Start Worker';
       btn.className = 'btn btn-sm ' + (enabled ? 'amber' : 'accent');
     }
+
     const statusEl = $('#trg-worker-pill');
     if (statusEl) {
       if (running) {
-        statusEl.textContent = 'Polling…';
+        statusEl.textContent =
+          phase === 'analyzing_ai'
+            ? 'AI Menganalisis…'
+            : phase === 'filtering'
+              ? 'Menyaring Exclude…'
+              : 'Menarik Wazuh…';
         statusEl.className = 'sync-pill';
       } else if (enabled) {
         statusEl.textContent = 'Worker Aktif';
@@ -1091,6 +1107,102 @@
       } else {
         statusEl.textContent = 'Worker Pause';
         statusEl.className = 'sync-pill offline';
+      }
+    }
+
+    const aiPill = $('#trg-ai-pill');
+    if (aiPill) {
+      const ollamaCfg = triageState.config?.ollama || {};
+      const aiConfigured = ws.ollamaConfigured ?? Boolean(String(ollamaCfg.baseUrl || '').trim() && String(ollamaCfg.model || '').trim());
+      if (ws.aiActive) {
+        const suffix = ws.activeTenant
+          ? ` (${ws.activeTenant})`
+          : (ws.totalChunks > 0 ? ` (${ws.processedChunks || 0}/${ws.totalChunks})` : '');
+        aiPill.textContent = `AI Aktif${suffix}`;
+        aiPill.className = 'sync-pill ai-active';
+      } else if (ws.lastError && !running) {
+        aiPill.textContent = 'AI / Poll Error';
+        aiPill.className = 'sync-pill offline';
+      } else if (aiConfigured) {
+        aiPill.textContent = 'AI Siap';
+        aiPill.className = 'sync-pill';
+      } else {
+        aiPill.textContent = 'AI Belum Diatur';
+        aiPill.className = 'sync-pill offline';
+      }
+    }
+
+    const phaseEl = $('#trg-tel-phase');
+    const fetchedEl = $('#trg-tel-fetched');
+    const excludedEl = $('#trg-tel-excluded');
+    const analyzedEl = $('#trg-tel-analyzed');
+    const modelEl = $('#trg-tel-model');
+
+    if (phaseEl) {
+      if (running || manualWaiting) {
+        const batchSuffix = ws.totalChunks > 0 ? ` (batch ${ws.processedChunks || 0}/${ws.totalChunks})` : '';
+        phaseEl.textContent = `${ws.phaseMessage || 'Memproses…'}${batchSuffix}`;
+      } else if (ws.lastError) {
+        phaseEl.textContent = `Error: ${ws.lastError}`;
+      } else if (ws.phaseMessage) {
+        const dur = ws.lastDurationMs > 0 ? ` (${(ws.lastDurationMs / 1000).toFixed(1)}s)` : '';
+        phaseEl.textContent = `${ws.phaseMessage}${dur}`;
+      } else if (ws.lastSuccessAt) {
+        const dur = ws.lastDurationMs > 0 ? ` (${(ws.lastDurationMs / 1000).toFixed(1)}s)` : '';
+        phaseEl.textContent = `Terakhir ${B.fmtWib(ws.lastSuccessAt)}${dur}`;
+      } else {
+        phaseEl.textContent = enabled ? 'Menunggu jadwal polling…' : 'Siap';
+      }
+    }
+
+    if (fetchedEl) {
+      fetchedEl.textContent = String(running ? (ws.fetchedCount || 0) : (ws.lastBatchCount ?? 0));
+    }
+    if (excludedEl) {
+      excludedEl.textContent = String(running ? (ws.excludedCount || 0) : (ws.lastExcludedCount ?? 0));
+    }
+    if (analyzedEl) {
+      analyzedEl.textContent = String(running ? (ws.analyzedCount || 0) : (ws.lastAnalyzedCount ?? 0));
+    }
+    if (modelEl) {
+      const fullModel = String(ws.aiModel || triageState.config?.ollama?.model || '').trim();
+      if (!fullModel) {
+        modelEl.textContent = '—';
+        modelEl.removeAttribute('title');
+      } else {
+        const tail = fullModel.includes('/') ? fullModel.split('/').pop() : fullModel;
+        modelEl.textContent = tail.length > 34 ? `${tail.slice(0, 31)}…` : tail;
+        modelEl.title = fullModel;
+      }
+    }
+
+    const progBox = $('#trg-poll-progress');
+    const progMsg = $('#trg-poll-progress-msg');
+    const progPct = $('#trg-poll-progress-pct');
+    const progFill = $('#trg-poll-progress-fill');
+    if (progBox) {
+      if (running || manualWaiting) {
+        progBox.hidden = false;
+        if (progMsg && ws.phaseMessage) progMsg.textContent = ws.phaseMessage;
+        const totalChunks = Number(ws.totalChunks || 0);
+        const doneChunks = Number(ws.processedChunks || 0);
+        if (phase === 'analyzing_ai' && totalChunks > 0) {
+          const pct = Math.max(5, Math.min(100, Math.round((doneChunks / totalChunks) * 100)));
+          if (progPct) progPct.textContent = `${doneChunks}/${totalChunks} batch (${pct}%)`;
+          if (progFill) {
+            progFill.className = 'triage-progress-fill';
+            progFill.style.transform = `scaleX(${pct / 100})`;
+          }
+        } else {
+          if (progPct) progPct.textContent = '';
+          if (progFill) {
+            progFill.style.transform = '';
+            progFill.className = 'triage-progress-fill is-indeterminate';
+          }
+        }
+      } else {
+        progBox.hidden = true;
+        if (progPct) progPct.textContent = '';
       }
     }
   }
@@ -2364,10 +2476,12 @@
       es.addEventListener('worker', (ev) => {
         try {
           const ws = JSON.parse(ev.data);
-          if (triageState.snapshot) {
+          if (!triageState.snapshot) {
+            triageState.snapshot = { groups: [], counts: {}, workerStatus: ws };
+          } else {
             triageState.snapshot.workerStatus = { ...triageState.snapshot.workerStatus, ...ws };
-            updateWorkerButtonsUi();
           }
+          updateWorkerButtonsUi();
         } catch {}
       });
       triageState.sse = es;
@@ -2476,7 +2590,7 @@
         B.toast({ type: 'error', title: 'Gagal menarik dari Wazuh Indexer', body: err.message });
       } finally {
         if (btn) btn.disabled = false;
-        if (progBox) progBox.hidden = true;
+        updateWorkerButtonsUi();
       }
     });
 
