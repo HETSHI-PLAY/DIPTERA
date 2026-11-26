@@ -640,22 +640,14 @@ function createTriageEngine(options = {}) {
     const started = Date.now();
     const headers = buildWazuhAuthHeaders(w);
     const cleanBase = String(w.url).trim().replace(/\/+$/, '');
-    let info;
-    try {
-      info = await requestJson(cleanBase + '/_cluster/health', {
-        method: 'GET',
-        headers,
-        allowSelfSigned: w.allowSelfSigned,
-        timeoutMs: 12000,
-      });
-    } catch {
-      info = await requestJson(cleanBase + '/', {
-        method: 'GET',
-        headers,
-        allowSelfSigned: w.allowSelfSigned,
-        timeoutMs: 12000,
-      });
-    }
+    const levelQuery = {
+      range: {
+        'rule.level': {
+          gte: Number(w.minRuleLevel ?? 7),
+          lte: Number(w.maxRuleLevel ?? 15),
+        },
+      },
+    };
 
     let docCount = null;
     try {
@@ -664,27 +656,47 @@ function createTriageEngine(options = {}) {
         headers,
         allowSelfSigned: w.allowSelfSigned,
         timeoutMs: 12000,
-        body: {
-          query: {
-            range: {
-              'rule.level': {
-                gte: Number(w.minRuleLevel ?? 7),
-                lte: Number(w.maxRuleLevel ?? 15),
-              },
-            },
-          },
-        },
+        body: { query: levelQuery },
       });
       if (typeof countRes.json?.count === 'number') docCount = countRes.json.count;
+    } catch (countErr) {
+      if (countErr?.status === 403 || countErr?.status === 405) {
+        const searchRes = await requestJson(buildWazuhIndexUrl(cleanBase, w.indexPattern, '/_search'), {
+          method: 'POST',
+          headers,
+          allowSelfSigned: w.allowSelfSigned,
+          timeoutMs: 12000,
+          body: { size: 0, track_total_hits: true, query: levelQuery },
+        });
+        const rawTotal = searchRes.json?.hits?.total;
+        docCount = typeof rawTotal === 'number'
+          ? rawTotal
+          : (typeof rawTotal?.value === 'number' ? rawTotal.value : null);
+      } else {
+        throw countErr;
+      }
+    }
+
+    let clusterName = 'Wazuh Indexer (' + (w.indexPattern || 'wazuh-alerts-*') + ')';
+    let status = 'read-only';
+    try {
+      const info = await requestJson(cleanBase + '/_cluster/health', {
+        method: 'GET',
+        headers,
+        allowSelfSigned: w.allowSelfSigned,
+        timeoutMs: 4000,
+      });
+      clusterName = info.json?.cluster_name || info.json?.name || clusterName;
+      status = info.json?.status || 'connected';
     } catch {
-      // Optional count check
+      // Optional cluster monitor check; least-privilege read-only users lack cluster:monitor/main
     }
 
     return {
       ok: true,
       latencyMs: Date.now() - started,
-      clusterName: info.json?.cluster_name || info.json?.name || 'Wazuh Indexer',
-      status: info.json?.status || 'connected',
+      clusterName,
+      status,
       docCount,
     };
   }

@@ -43,6 +43,8 @@ async function main() {
   // Mock Wazuh hits store (mutable per scenario)
   let mockWazuhHits = [];
   let wazuhQueries = [];
+  let clusterHealthForbidden = false;
+  let countForbidden = false;
 
   const mockWazuh = http.createServer((req, res) => {
     const chunks = [];
@@ -52,11 +54,21 @@ async function main() {
       let parsed = {};
       try { parsed = body ? JSON.parse(body) : {}; } catch {}
 
-      if (req.url === '/_cluster/health') {
+      if (req.url === '/_cluster/health' || req.url === '/') {
+        if (clusterHealthForbidden) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({
+            error: { reason: 'no permissions for [cluster:monitor/main] and User [name=llm_reader_asoc, backend_roles=[], requestedTenant=null]' },
+          }));
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ cluster_name: 'wazuh-mock-cluster', status: 'green' }));
       }
       if (req.url.endsWith('/_count')) {
+        if (countForbidden) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: { reason: 'no permissions for [indices:data/read/search/_count]' } }));
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ count: mockWazuhHits.length }));
       }
@@ -237,12 +249,28 @@ async function main() {
       body: { wazuh: { url: wazuhUrl, minRuleLevel: 7, maxRuleLevel: 15 } },
     });
 
-    // 2. Test Connection Endpoints
+    // 2. Test Connection Endpoints (including least-privilege read-only user without cluster:monitor/main)
     const testWazuh = await httpJson(`${baseUrl}/api/triage/test-wazuh`, { method: 'POST', body: {} });
     assert.equal(testWazuh.status, 200);
     assert.equal(testWazuh.json.ok, true);
     assert.equal(testWazuh.json.clusterName, 'wazuh-mock-cluster');
-    assert.ok(wazuhQueries.length === 0 || true);
+
+    clusterHealthForbidden = true;
+    const testWazuhReadOnly = await httpJson(`${baseUrl}/api/triage/test-wazuh`, { method: 'POST', body: {} });
+    assert.equal(testWazuhReadOnly.status, 200);
+    assert.equal(testWazuhReadOnly.json.ok, true);
+    assert.equal(testWazuhReadOnly.json.status, 'read-only');
+    assert.equal(typeof testWazuhReadOnly.json.docCount, 'number');
+
+    countForbidden = true;
+    const testWazuhSearchFallback = await httpJson(`${baseUrl}/api/triage/test-wazuh`, { method: 'POST', body: {} });
+    assert.equal(testWazuhSearchFallback.status, 200);
+    assert.equal(testWazuhSearchFallback.json.ok, true);
+    assert.equal(testWazuhSearchFallback.json.status, 'read-only');
+    assert.equal(typeof testWazuhSearchFallback.json.docCount, 'number');
+    clusterHealthForbidden = false;
+    countForbidden = false;
+    wazuhQueries = [];
 
     const testOllama = await httpJson(`${baseUrl}/api/triage/test-ollama`, { method: 'POST', body: {} });
     assert.equal(testOllama.status, 200);
