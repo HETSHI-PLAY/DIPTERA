@@ -980,7 +980,8 @@
   function updateHistoryTabCounts() {
     const activeWs = state.activeWorkspace;
     $('#tab-history-label').textContent = 'Riwayat';
-    $('#tab-history-count').textContent = String(state.historyCounts[activeWs] ?? 0);
+    const histTabCount = $('#tab-history-count');
+    if (histTabCount) histTabCount.textContent = String(state.historyCounts[activeWs] ?? 0);
     $('#hist-count-asoc').textContent = String(state.historyCounts.asoc ?? 0);
     $('#hist-count-soc').textContent = String(state.historyCounts.soc ?? 0);
   }

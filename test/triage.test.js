@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { createServer } = require('../src/server.js');
-const { evaluateExclusions, deriveExclusionRuleFromAlerts, chunkAlertsForPromote } = require('../src/services/triage.js');
+const { evaluateExclusions, deriveExclusionRuleFromAlerts, deriveExclusionRulesFromAlerts, chunkAlertsForPromote } = require('../src/services/triage.js');
 
 function httpJson(url, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -167,6 +167,32 @@ async function main() {
           }
 
           const userMsg = body.messages.find((m) => m.role === 'user')?.content || '';
+          const exMarker = 'Sampel alert unik:\n';
+          if (userMsg.includes(exMarker)) {
+            const samples = JSON.parse(userMsg.slice(userMsg.indexOf(exMarker) + exMarker.length));
+            const aiRules = [];
+            if (samples[0]?.path) {
+              aiRules.push({
+                target: 'path',
+                mode: 'wildcard',
+                pattern: samples[0].path.replace(/\/\d+(?=\/|$)/g, '/*'),
+                note: 'AI exclude URL spesifik',
+              });
+            }
+            if (samples[0]?.rule_description) {
+              aiRules.push({
+                target: 'rule_description',
+                mode: 'contains',
+                pattern: samples[0].rule_description,
+                note: 'AI exclude deskripsi rule',
+              });
+            }
+            res.writeHead(200, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({
+              message: { content: JSON.stringify({ reasoning: 'Saran rule spesifik dari sampel alert.', rules: aiRules }) },
+            }));
+          }
+
           const batchMarker = 'Kandidat batch:\n';
           const idx = userMsg.indexOf(batchMarker);
           const candidates = JSON.parse(userMsg.slice(idx + batchMarker.length));
@@ -844,7 +870,84 @@ async function main() {
     assert.equal(delEx.status, 200);
     assert.equal(delEx.json.deletedId, addManualEx.json.rule.id);
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (15/15)');
+    // 16. Wildcard (*) matching on user's 6-endpoint academic pattern & multi-target exclusions
+    const academicAlerts = [
+      { raw_wazuh_alert: { data: { url: '//mhs/2602020404/pa' } } },
+      { raw_wazuh_alert: { data: { url: '/service/mhs/2602020058/ip-kemarin' } } },
+      { raw_wazuh_alert: { data: { url: '//mhs/2502020574/pa' } } },
+      { raw_wazuh_alert: { data: { url: '//krs/sp/kelas-detil/2502020574' } } },
+      { raw_wazuh_alert: { data: { url: '/service/mhs/cek-matkul-ganda' } } },
+      { raw_wazuh_alert: { data: { url: '/service/mhs/2502020167/ip-kemarin' } } },
+    ];
+    const wildRules = deriveExclusionRulesFromAlerts(academicAlerts, 'Academic service 400');
+    assert.equal(wildRules.length, 4);
+    assert.equal(wildRules.some((r) => r.mode === 'wildcard' && r.pattern === '/service/mhs/*/ip-kemarin'), true);
+    assert.equal(wildRules.some((r) => r.mode === 'wildcard' && r.pattern === '//mhs/*/pa'), true);
+    assert.equal(wildRules.some((r) => r.mode === 'wildcard' && r.pattern === '//krs/sp/kelas-detil/*'), true);
+    assert.equal(wildRules.some((r) => r.mode === 'contains' && r.pattern === '/service/mhs/cek-matkul-ganda'), true);
+    assert.equal(evaluateExclusions({ data: { url: '/service/mhs/999999999/ip-kemarin?t=1' } }, wildRules).excluded, true);
+    assert.equal(evaluateExclusions({ data: { url: '//mhs/123456/pa' } }, wildRules).excluded, true);
+    assert.equal(evaluateExclusions({ data: { url: '//krs/sp/kelas-detil/777777' } }, wildRules).excluded, true);
+    assert.equal(evaluateExclusions({ data: { url: '/service/mhs/a/b/ip-kemarin' } }, wildRules).excluded, false);
+    assert.equal(evaluateExclusions({ data: { url: '/service/admin/exec' } }, wildRules).excluded, false);
+
+    // Multi-target exclusions: filename, rule_description, rule_id, src_ip, agent_name, user_agent
+    assert.equal(evaluateExclusions({ syscheck: { path: '/var/log/nginx/laravel.log' } }, [{ enabled: true, target: 'filename', mode: 'wildcard', pattern: '*.log' }]).excluded, true);
+    assert.equal(evaluateExclusions({ rule: { id: '31151', description: 'Multiple web server 400 error codes.' } }, [{ enabled: true, target: 'rule_description', mode: 'wildcard', pattern: '*400 error*' }]).excluded, true);
+    assert.equal(evaluateExclusions({ rule: { id: '31151' } }, [{ enabled: true, target: 'rule_id', mode: 'contains', pattern: '31151' }]).excluded, true);
+    assert.equal(evaluateExclusions({ data: { srcip: '10.20.30.40', http_user_agent: 'HealthCheckBot/2.1' }, agent: { name: 'siakad-app-01' } }, [
+      { enabled: true, target: 'src_ip', mode: 'wildcard', pattern: '10.20.*' },
+    ]).excluded, true);
+    assert.equal(evaluateExclusions({ agent: { name: 'siakad-app-01' } }, [{ enabled: true, target: 'agent_name', mode: 'wildcard', pattern: 'siakad-*' }]).excluded, true);
+    assert.equal(evaluateExclusions({ data: { http_user_agent: 'HealthCheckBot/2.1' } }, [{ enabled: true, target: 'user_agent', mode: 'contains', pattern: 'HealthCheckBot' }]).excluded, true);
+
+    // 17. Exclude Preview Suggest, AI Analyze Suggest & Explicit Rules Confirm Flow
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    mockWazuhHits.push({
+      _id: 'w-wild-1',
+      _source: {
+        '@timestamp': '2029-11-26T10:15:00.000Z',
+        rule: { id: '31151', level: 8, description: 'Academic 404 probe' },
+        agent: { id: '009', name: 'instiki-web-09' },
+        data: { srcip: '10.10.2.5', url: '/service/mhs/2602020058/ip-kemarin', http_status: '400' },
+        full_log: '10.10.2.5 "GET /service/mhs/2602020058/ip-kemarin HTTP/1.1" 400 "typo-legit"',
+      },
+    });
+    const wildPoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:14:00.000Z', to: '2029-11-26T10:16:00.000Z', size: 10 },
+    });
+    assert.equal(wildPoll.json.snapshot.groups.length, 1);
+    const wildGrp = wildPoll.json.snapshot.groups[0];
+
+    const suggestRes = await httpJson(`${baseUrl}/api/triage/exclusions/suggest`, {
+      method: 'POST',
+      body: { source: 'queue', groupIds: [wildGrp.group_id] },
+    });
+    assert.equal(suggestRes.status, 200);
+    assert.equal(suggestRes.json.rules[0].mode, 'wildcard');
+    assert.equal(suggestRes.json.rules[0].pattern, '/service/mhs/*/ip-kemarin');
+
+    const aiSuggestRes = await httpJson(`${baseUrl}/api/triage/exclusions/ai-suggest`, {
+      method: 'POST',
+      body: { source: 'queue', groupIds: [wildGrp.group_id] },
+    });
+    assert.equal(aiSuggestRes.status, 200);
+    assert.ok(aiSuggestRes.json.reasoning);
+    assert.equal(aiSuggestRes.json.rules.some((r) => r.target === 'rule_description'), true);
+
+    const confirmExplicit = await httpJson(`${baseUrl}/api/triage/ignore-exclude`, {
+      method: 'POST',
+      body: {
+        groupIds: [wildGrp.group_id],
+        rules: [{ target: 'path', mode: 'wildcard', pattern: '/service/mhs/*/ip-kemarin', note: 'Disetujui analis' }],
+      },
+    });
+    assert.equal(confirmExplicit.status, 200);
+    assert.equal(confirmExplicit.json.rulesAdded[0].pattern, '/service/mhs/*/ip-kemarin');
+    assert.equal(confirmExplicit.json.rulesAdded[0].mode, 'wildcard');
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (17/17)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

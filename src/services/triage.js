@@ -15,6 +15,39 @@ const MAX_SEEN_IDS = 20000;
 const MAX_ALERTS_PER_CASE = 1000;
 const OLLAMA_MICRO_BATCH_SIZE = 15;
 const VALID_VERDICTS = ['TRUE_POSITIVE', 'NEEDS_REVIEW', 'FALSE_POSITIVE'];
+const VALID_EXCLUSION_TARGETS = [
+  'path',
+  'filename',
+  'rule_description',
+  'rule_id',
+  'src_ip',
+  'agent_name',
+  'user_agent',
+  'full_log',
+];
+const VALID_EXCLUSION_MODES = ['wildcard', 'contains', 'starts_with', 'regex'];
+const EXCLUSION_SUGGEST_SCHEMA = {
+  type: 'object',
+  properties: {
+    reasoning: { type: 'string' },
+    rules: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          target: { type: 'string', enum: VALID_EXCLUSION_TARGETS },
+          mode: { type: 'string', enum: VALID_EXCLUSION_MODES },
+          pattern: { type: 'string' },
+          note: { type: 'string' },
+        },
+        required: ['target', 'mode', 'pattern', 'note'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['reasoning', 'rules'],
+  additionalProperties: false,
+};
 const TRIAGE_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
@@ -213,14 +246,16 @@ function normalizePath(rawPath) {
 }
 
 function sanitizeExclusionRule(raw, idx = 0) {
-  const target = raw?.target === 'full_log' ? 'full_log' : 'path';
-  const mode = raw?.mode === 'starts_with' || raw?.mode === 'regex' ? raw.mode : 'contains';
+  const rawTarget = String(raw?.target || 'path').trim();
+  const target = VALID_EXCLUSION_TARGETS.includes(rawTarget) ? rawTarget : 'path';
+  const rawMode = String(raw?.mode || 'contains').trim();
+  const mode = VALID_EXCLUSION_MODES.includes(rawMode) ? rawMode : 'contains';
   const pattern = String(raw?.pattern ?? '').trim();
   if (!pattern) return null;
   const id = String(raw?.id || ('ex_' + idx + '_' + crypto.randomBytes(3).toString('hex')));
   const rawSource = String(raw?.source || '').trim();
   const inferredDefault = id.startsWith('ex-path-') || id.startsWith('ex-log-');
-  const source = rawSource === 'auto_ignore' || rawSource === 'default' || rawSource === 'manual'
+  const source = ['auto_ignore', 'default', 'manual', 'ai_suggest'].includes(rawSource)
     ? rawSource
     : (inferredDefault ? 'default' : 'manual');
   return {
@@ -233,6 +268,42 @@ function sanitizeExclusionRule(raw, idx = 0) {
     createdAt: raw?.createdAt || null,
     note: String(raw?.note ?? '').trim().slice(0, 120),
   };
+}
+
+function extractFilenameCandidates(rawAlert) {
+  const candidates = [];
+  const push = (v) => {
+    const s = String(v ?? '').trim();
+    if (!s) return;
+    if (!candidates.includes(s)) candidates.push(s);
+    const base = s.split('?')[0].split(/[\\/]/).filter(Boolean).pop() || '';
+    if (base && !candidates.includes(base)) candidates.push(base);
+  };
+  push(rawAlert?.syscheck?.path);
+  push(rawAlert?.data?.win?.eventdata?.targetFilename);
+  push(rawAlert?.data?.file);
+  push(rawAlert?.data?.filename);
+  push(rawAlert?.data?.path);
+
+  for (const urlPath of extractPathCandidates(rawAlert)) {
+    const noQuery = urlPath.split('?')[0].trim();
+    const lastSeg = noQuery.split('/').filter(Boolean).pop() || '';
+    if (/\.[a-z0-9]{1,8}$/i.test(lastSeg)) {
+      if (!candidates.includes(noQuery)) candidates.push(noQuery);
+      if (!candidates.includes(lastSeg)) candidates.push(lastSeg);
+    }
+  }
+  return candidates;
+}
+
+function isOverlyBroadPathPattern(pattern) {
+  const s = String(pattern || '').trim();
+  if (!s || s === '/' || s === '*' || s === '/*' || s === '**' || s === '/**') return true;
+  const cleaned = s.replace(/\?.*$/, '');
+  const segs = cleaned.split('/').filter(Boolean);
+  if (segs.length <= 1 && (cleaned.endsWith('/') || segs[0] === '*' || segs[0] === '**')) return true;
+  if (segs.length === 2 && (segs[1] === '*' || segs[1] === '**') && cleaned.startsWith('/')) return true;
+  return false;
 }
 
 function longestCommonSubstring(strings = [], minLen = 12) {
@@ -261,10 +332,39 @@ function commonPathPrefix(paths = []) {
   const slashIdx = prefix.lastIndexOf('/');
   const clean = slashIdx > 0 ? prefix.slice(0, slashIdx + 1) : '';
   const segCount = clean.split('/').filter(Boolean).length;
-  return segCount >= 1 && clean.length >= 4 ? clean : '';
+  // Require at least 2 path segments (e.g. /service/mhs/) so 1-segment roots like /service/ or /api/ are never used
+  return segCount >= 2 && clean.length >= 6 ? clean : '';
 }
 
-function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
+function buildSpecificPathRule(normPath, exactPath, note, nowIso) {
+  const np = String(normPath || '').trim();
+  const hasParam = /\/:(?:id|uuid|hex)\b/.test(np);
+  if (hasParam) {
+    const wildcardPattern = np.replace(/\/:(?:id|uuid|hex)\b/g, '/*').slice(0, 160);
+    if (!isOverlyBroadPathPattern(wildcardPattern)) {
+      return {
+        target: 'path',
+        mode: 'wildcard',
+        pattern: wildcardPattern,
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    }
+  }
+  return {
+    target: 'path',
+    mode: 'contains',
+    pattern: String(exactPath || np).slice(0, 140),
+    enabled: true,
+    source: 'auto_ignore',
+    createdAt: nowIso,
+    note,
+  };
+}
+
+function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
   const raws = (Array.isArray(alerts) ? alerts : [alerts])
     .map((a) => (a && a.raw_wazuh_alert ? a.raw_wazuh_alert : a))
     .filter((r) => r && typeof r === 'object');
@@ -272,81 +372,33 @@ function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
   const note = ('Auto-exclude: ' + String(fallbackTitle || firstDesc || 'Abaikan analis').trim()).slice(0, 120);
   const nowIso = new Date().toISOString();
 
-  // Priority 1: Non-trivial URL/request path across alerts
+  // Priority 1: Non-trivial URL/request paths grouped per distinct normalized endpoint (uses * wildcard for dynamic segments)
   const rawPaths = [];
-  const exactCounts = new Map();
-  const normCounts = new Map();
+  const normBuckets = new Map();
   for (const r of raws) {
     const p = extractPathCandidates(r)[0] || '';
     const clean = p.split('?')[0].trim();
     if (!clean || clean === '/' || clean.length < 2) continue;
     rawPaths.push(clean);
-    exactCounts.set(clean, (exactCounts.get(clean) || 0) + 1);
-    const np = normalizePath(clean);
-    if (np && np !== '/') normCounts.set(np, (normCounts.get(np) || 0) + 1);
+    const np = normalizePath(clean) || clean;
+    if (!np || np === '/') continue;
+    let bucket = normBuckets.get(np);
+    if (!bucket) {
+      bucket = { normPath: np, count: 0, sampleExact: clean };
+      normBuckets.set(np, bucket);
+    }
+    bucket.count++;
   }
 
-  if (rawPaths.length > 0) {
-    const half = Math.max(1, Math.ceil(rawPaths.length * 0.5));
-    const topExact = [...exactCounts.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (topExact && topExact[1] >= half) {
-      return {
-        target: 'path',
-        mode: 'contains',
-        pattern: topExact[0].slice(0, 140),
-        enabled: true,
-        source: 'auto_ignore',
-        createdAt: nowIso,
-        note,
-      };
+  if (normBuckets.size > 0) {
+    const MAX_AUTO_RULES = 8;
+    const sorted = [...normBuckets.values()].sort((a, b) => b.count - a.count);
+    if (sorted.length <= MAX_AUTO_RULES) {
+      return sorted.map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso));
     }
-
-    const topNorm = [...normCounts.entries()].sort((a, b) => b[1] - a[1])[0];
-    if (topNorm && topNorm[1] >= half) {
-      const np = topNorm[0];
-      const paramIdx = np.search(/\/:(?:id|uuid|hex)\b/);
-      if (paramIdx >= 3) {
-        return {
-          target: 'path',
-          mode: 'starts_with',
-          pattern: np.slice(0, paramIdx + 1),
-          enabled: true,
-          source: 'auto_ignore',
-          createdAt: nowIso,
-          note,
-        };
-      }
-      if (paramIdx >= 0) {
-        const regexBody = np
-          .split(/(\/:(?:uuid|hex|id))/)
-          .map((part) => (part === '/:uuid' || part === '/:hex' || part === '/:id'
-            ? '/[^/]+'
-            : part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')))
-          .join('');
-        return {
-          target: 'path',
-          mode: 'regex',
-          pattern: '^' + regexBody,
-          enabled: true,
-          source: 'auto_ignore',
-          createdAt: nowIso,
-          note,
-        };
-      }
-      return {
-        target: 'path',
-        mode: 'contains',
-        pattern: np,
-        enabled: true,
-        source: 'auto_ignore',
-        createdAt: nowIso,
-        note,
-      };
-    }
-
     const sharedPrefix = commonPathPrefix(rawPaths);
-    if (sharedPrefix) {
-      return {
+    if (sharedPrefix && !isOverlyBroadPathPattern(sharedPrefix)) {
+      return [{
         target: 'path',
         mode: 'starts_with',
         pattern: sharedPrefix,
@@ -354,8 +406,32 @@ function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
         source: 'auto_ignore',
         createdAt: nowIso,
         note,
-      };
+      }];
     }
+    return sorted.slice(0, MAX_AUTO_RULES).map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso));
+  }
+
+  // Priority 1B: Filename / syscheck targets when alert is file-centric rather than HTTP
+  const fileNames = [];
+  for (const r of raws) {
+    const f = r?.syscheck?.path || r?.data?.win?.eventdata?.targetFilename || r?.data?.filename || r?.data?.file || '';
+    const cleanF = String(f || '').trim();
+    if (cleanF && !fileNames.includes(cleanF)) fileNames.push(cleanF);
+  }
+  if (fileNames.length > 0 && fileNames.length <= 5) {
+    return fileNames.map((fn) => {
+      const wildcarded = fn.replace(/\d{4,}/g, '*');
+      const useWild = wildcarded !== fn && wildcarded.includes('*');
+      return {
+        target: 'filename',
+        mode: useWild ? 'wildcard' : 'contains',
+        pattern: (useWild ? wildcarded : fn).slice(0, 140),
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    });
   }
 
   // Priority 2: Common full_log signature
@@ -371,7 +447,7 @@ function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
   if (cleanLogs.length >= 2) {
     const common = longestCommonSubstring(cleanLogs.slice(0, 5), 12);
     if (common) {
-      return {
+      return [{
         target: 'full_log',
         mode: 'contains',
         pattern: common.slice(0, 100),
@@ -379,10 +455,10 @@ function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
         source: 'auto_ignore',
         createdAt: nowIso,
         note,
-      };
+      }];
     }
   } else if (cleanLogs.length === 1) {
-    return {
+    return [{
       target: 'full_log',
       mode: 'contains',
       pattern: cleanLogs[0].slice(0, 90),
@@ -390,26 +466,42 @@ function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
       source: 'auto_ignore',
       createdAt: nowIso,
       note,
-    };
+    }];
   }
 
-  // Priority 3: Fallback rule.description or group title
+  // Priority 3: Rule Description fallback
   const fallback = String(firstDesc || fallbackTitle || '').trim().slice(0, 100);
-  if (!fallback) return null;
-  return {
-    target: 'full_log',
+  if (!fallback) return [];
+  return [{
+    target: 'rule_description',
     mode: 'contains',
     pattern: fallback,
     enabled: true,
     source: 'auto_ignore',
     createdAt: nowIso,
     note,
-  };
+  }];
+}
+
+function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
+  return deriveExclusionRulesFromAlerts(alerts, fallbackTitle)[0] || null;
+}
+
+function compileWildcardRegex(pattern, target) {
+  const escaped = String(pattern || '')
+    .trim()
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\u0000DBL\u0000')
+    .replace(/\*/g, (target === 'path' || target === 'filename') ? '[^/?#]+' : '.*')
+    .replace(/\u0000DBL\u0000/g, '.*');
+  const anchored = ['path', 'filename', 'rule_id', 'src_ip', 'agent_name'].includes(target);
+  return new RegExp(anchored ? '^' + escaped + '$' : escaped, 'i');
 }
 
 function matchesRule(candidates, rule) {
   if (!rule || !rule.enabled || !rule.pattern) return false;
-  const needle = String(rule.pattern);
+  const needle = String(rule.pattern).trim();
+  if (!needle) return false;
   const needleLower = needle.toLowerCase();
 
   let compiledRe = null;
@@ -419,12 +511,23 @@ function matchesRule(candidates, rule) {
     } catch {
       return false;
     }
+  } else if (rule.mode === 'wildcard') {
+    try {
+      compiledRe = compileWildcardRegex(needle, rule.target);
+    } catch {
+      return false;
+    }
   }
 
   for (const val of candidates) {
-    const str = String(val || '');
+    let str = String(val || '');
     if (!str) continue;
     if (rule.mode === 'regex') {
+      if (compiledRe && compiledRe.test(str)) return true;
+    } else if (rule.mode === 'wildcard') {
+      if (rule.target === 'path' && !needle.includes('?')) {
+        str = str.split('?')[0].trim();
+      }
       if (compiledRe && compiledRe.test(str)) return true;
     } else if (rule.mode === 'starts_with') {
       if (str.toLowerCase().startsWith(needleLower)) return true;
@@ -439,16 +542,38 @@ function evaluateExclusions(rawAlert, rules) {
   const activeRules = Array.isArray(rules) ? rules.filter((r) => r && r.enabled && r.pattern) : [];
   if (!activeRules.length) return { excluded: false };
 
-  const pathCandidates = extractPathCandidates(rawAlert);
-  const logCandidates = [
-    rawAlert?.full_log,
-    rawAlert?.rule?.description,
-    rawAlert?.data?.http_user_agent,
-    rawAlert?.data?.url,
-  ].filter(Boolean);
+  const byTarget = {};
+  const getTargets = (target) => {
+    if (byTarget[target]) return byTarget[target];
+    let list = [];
+    if (target === 'path') {
+      list = extractPathCandidates(rawAlert);
+    } else if (target === 'filename') {
+      list = extractFilenameCandidates(rawAlert);
+    } else if (target === 'rule_description') {
+      list = [rawAlert?.rule?.description].filter(Boolean);
+    } else if (target === 'rule_id') {
+      list = rawAlert?.rule?.id != null ? [String(rawAlert.rule.id)] : [];
+    } else if (target === 'src_ip') {
+      list = [extractSrcIp(rawAlert)].filter(Boolean);
+    } else if (target === 'agent_name') {
+      list = [rawAlert?.agent?.name].filter(Boolean);
+    } else if (target === 'user_agent') {
+      list = [extractUserAgent(rawAlert)].filter(Boolean);
+    } else {
+      list = [
+        rawAlert?.full_log,
+        rawAlert?.rule?.description,
+        rawAlert?.data?.http_user_agent,
+        rawAlert?.data?.url,
+      ].filter(Boolean);
+    }
+    byTarget[target] = list;
+    return list;
+  };
 
   for (const rule of activeRules) {
-    const targets = rule.target === 'full_log' ? logCandidates : pathCandidates;
+    const targets = getTargets(rule.target);
     if (matchesRule(targets, rule)) {
       return {
         excluded: true,
@@ -2092,6 +2217,38 @@ function createTriageEngine(options = {}) {
       }
     };
 
+    const applyRulesList = (alerts, rulePayloads = []) => {
+      const firstApplied = [];
+      for (const candidate of rulePayloads) {
+        const { rule, alreadyExisted } = upsertExclusionRule(candidate);
+        if (alreadyExisted) {
+          if (!rulesExisting.some((x) => x.id === rule.id)) rulesExisting.push(rule);
+        } else {
+          if (!rulesAdded.some((x) => x.id === rule.id)) rulesAdded.push(rule);
+        }
+        firstApplied.push(rule);
+      }
+      if (firstApplied.length) recordExcludedAlerts(alerts, firstApplied[0]);
+      return firstApplied;
+    };
+
+    const explicitRules = Array.isArray(opts.rules)
+      ? opts.rules.map((r, i) => sanitizeExclusionRule(r, i)).filter((r) => r && r.enabled !== false && r.pattern)
+      : null;
+
+    if (explicitRules !== null && explicitRules.length === 0) {
+      throw Object.assign(new Error('Minimal 1 rule exclude dengan pola valid harus dipilih.'), { status: 400 });
+    }
+
+    const applyForGroupOrAlerts = (alerts, title) => {
+      if (explicitRules && explicitRules.length) {
+        return applyRulesList(alerts, explicitRules);
+      }
+      const derivedList = deriveExclusionRulesFromAlerts(alerts, title);
+      if (!derivedList.length) return [];
+      return applyRulesList(alerts, derivedList);
+    };
+
     if (groupId && alertIds.length > 0) {
       const grp = nextList.find((g) => g.group_id === groupId);
       if (!grp) {
@@ -2101,14 +2258,10 @@ function createTriageEngine(options = {}) {
       nextList = res.nextList;
       groupRemoved = res.groupRemoved;
       if (groupRemoved) removedGroups = 1;
-      const derived = deriveExclusionRuleFromAlerts(res.removed, grp.incident_title || '');
-      if (!derived) {
+      const applied = applyForGroupOrAlerts(res.removed, grp.incident_title || '');
+      if (!applied.length) {
         throw Object.assign(new Error('Tidak dapat mendeteksi pola exclusion otomatis dari alert terpilih.'), { status: 400 });
       }
-      const { rule, alreadyExisted } = upsertExclusionRule(derived);
-      if (alreadyExisted) rulesExisting.push(rule);
-      else rulesAdded.push(rule);
-      recordExcludedAlerts(res.removed, rule);
     } else if (groupIds.length > 0) {
       const { toRemove, remaining } = dismissGroupsInList(nextList, { groupIds });
       if (!toRemove.length) {
@@ -2118,15 +2271,7 @@ function createTriageEngine(options = {}) {
       removedGroups = toRemove.length;
       groupRemoved = true;
       for (const grp of toRemove) {
-        const derived = deriveExclusionRuleFromAlerts(grp.alerts || [], grp.incident_title || '');
-        if (!derived) continue;
-        const { rule, alreadyExisted } = upsertExclusionRule(derived);
-        if (alreadyExisted) {
-          if (!rulesExisting.some((x) => x.id === rule.id)) rulesExisting.push(rule);
-        } else {
-          if (!rulesAdded.some((x) => x.id === rule.id)) rulesAdded.push(rule);
-        }
-        recordExcludedAlerts(grp.alerts || [], rule);
+        applyForGroupOrAlerts(grp.alerts || [], grp.incident_title || '');
       }
     } else {
       throw Object.assign(new Error('Pilih grup atau alert yang akan diabaikan & di-exclude.'), { status: 400 });
@@ -2139,6 +2284,148 @@ function createTriageEngine(options = {}) {
       removedGroups,
       removedAlerts,
       groupRemoved,
+    };
+  }
+
+  function resolveAlertsForExclusionRequest(opts = {}) {
+    const source = String(opts.source || 'queue').trim().toLowerCase();
+    if (Array.isArray(opts.rawAlerts) && opts.rawAlerts.length) {
+      const alerts = opts.rawAlerts.map((a, idx) => ({
+        alert_id: String(a?.alert_id || a?._id || `raw_${idx}`),
+        raw_wazuh_alert: a?.raw_wazuh_alert || a || {},
+      }));
+      return { alerts, fallbackTitle: String(opts.title || alerts[0]?.raw_wazuh_alert?.rule?.description || '').trim() };
+    }
+    const list = source === 'batch24h' ? batch24h.groups : state.groups;
+    const groupId = String(opts.groupId || '').trim();
+    const alertIds = Array.isArray(opts.alertIds) ? opts.alertIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const groupIds = Array.isArray(opts.groupIds)
+      ? opts.groupIds.map((x) => String(x || '').trim()).filter(Boolean)
+      : (groupId ? [groupId] : []);
+
+    if (groupId && alertIds.length > 0) {
+      const grp = list.find((g) => g.group_id === groupId);
+      if (!grp) throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+      const idSet = new Set(alertIds);
+      const picked = (grp.alerts || []).filter((a) => idSet.has(a.alert_id));
+      if (!picked.length) throw Object.assign(new Error('Alert yang dipilih tidak ditemukan di grup ini.'), { status: 404 });
+      return { alerts: picked, fallbackTitle: grp.incident_title || '' };
+    }
+    if (groupIds.length > 0) {
+      const matched = list.filter((g) => groupIds.includes(g.group_id));
+      if (!matched.length) throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+      const combined = matched.flatMap((g) => g.alerts || []);
+      return { alerts: combined, fallbackTitle: matched[0]?.incident_title || '' };
+    }
+    throw Object.assign(new Error('groupId, groupIds, atau rawAlerts wajib diisi.'), { status: 400 });
+  }
+
+  function suggestExclusionRules(opts = {}) {
+    const { alerts, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
+    const rules = deriveExclusionRulesFromAlerts(alerts, fallbackTitle);
+    return {
+      ok: true,
+      title: fallbackTitle,
+      alertCount: alerts.length,
+      rules,
+    };
+  }
+
+  async function aiSuggestExclusionRules(opts = {}) {
+    const { alerts, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
+    const o = config.ollama || {};
+    const baseUrl = String(o.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!baseUrl) {
+      throw Object.assign(new Error('Ollama Base URL belum dikonfigurasi.'), { status: 400 });
+    }
+
+    const seenSample = new Set();
+    const compactSamples = [];
+    for (const al of alerts) {
+      const raw = al?.raw_wazuh_alert || {};
+      const sample = {
+        path: extractPathCandidates(raw)[0] || '',
+        filename: extractFilenameCandidates(raw)[0] || '',
+        rule_id: String(raw.rule?.id || ''),
+        rule_description: String(raw.rule?.description || ''),
+        agent_name: String(raw.agent?.name || ''),
+        src_ip: extractSrcIp(raw),
+        user_agent: extractUserAgent(raw).slice(0, 100),
+        full_log: String(raw.full_log || '').slice(0, 220),
+      };
+      const fp = `${sample.rule_id}|${normalizePath(sample.path)}|${sample.filename}|${sample.full_log.slice(0, 60)}`;
+      if (seenSample.has(fp)) continue;
+      seenSample.add(fp);
+      compactSamples.push(sample);
+      if (compactSamples.length >= 12) break;
+    }
+
+    const sysPrompt = [
+      'Anda adalah Analis SOC Senior yang bertugas merancang aturan Exclusion Whitelist Wazuh yang presisi dan aman agar trafik jinak (False Positive) tersaring sebelum ke AI, tanpa menelan trafik berbahaya.',
+      'Target yang tersedia:',
+      '- path: URL / Request path',
+      '- filename: nama file atau path file (mis. syscheck / laravel.log / *.tmp)',
+      '- rule_description: teks deskripsi rule Wazuh',
+      '- rule_id: ID rule Wazuh (mis. 31151)',
+      '- src_ip: IP sumber internal/scanner tepercaya',
+      '- agent_name: nama host/agent tertentu',
+      '- user_agent: string HTTP User-Agent',
+      '- full_log: substring / pola pada full_log',
+      'Mode pencocokan yang tersedia: wildcard (gunakan * untuk ID/NIM/hash/timestamp dinamis, mis. /service/mhs/*/ip-kemarin), contains, starts_with, regex.',
+      'LARANGAN KERAS: JANGAN buat pola terlalu umum seperti "/", "/*", "/service/", "/service/*", atau "/api/" yang menyapu satu root aplikasi.',
+      'Keluarkan JSON valid sesuai schema dengan daftar rules minimal namun akurat dan reasoning singkat dalam Bahasa Indonesia.',
+    ].join('\n');
+
+    const userPrompt = [
+      `Judul insiden: ${fallbackTitle || '—'}`,
+      `Total alert: ${alerts.length}`,
+      'Sampel alert unik:',
+      JSON.stringify(compactSamples),
+    ].join('\n');
+
+    const res = await withOllamaLock(() => requestJson(baseUrl + '/api/chat', {
+      method: 'POST',
+      timeoutMs: 90000,
+      body: {
+        model: o.model,
+        stream: false,
+        think: false,
+        keep_alive: '2m',
+        format: EXCLUSION_SUGGEST_SCHEMA,
+        options: {
+          temperature: 0.1,
+          num_ctx: 8192,
+          num_predict: 1024,
+          top_p: 0.85,
+          top_k: 20,
+          repeat_penalty: 1.05,
+        },
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      },
+    }));
+
+    const content = res.json?.message?.content ?? res.json?.response ?? '';
+    const parsed = parseJsonFromAiText(content);
+    const rawRules = Array.isArray(parsed?.rules) ? parsed.rules : [];
+    const cleaned = [];
+    const seenKeys = new Set();
+    for (let i = 0; i < rawRules.length; i++) {
+      const san = sanitizeExclusionRule({ ...rawRules[i], enabled: true, source: 'ai_suggest' }, i);
+      if (!san || !san.pattern) continue;
+      if (san.target === 'path' && isOverlyBroadPathPattern(san.pattern)) continue;
+      const dedupKey = `${san.target}|${san.mode}|${san.pattern.toLowerCase()}`;
+      if (seenKeys.has(dedupKey)) continue;
+      seenKeys.add(dedupKey);
+      cleaned.push(san);
+    }
+
+    return {
+      ok: true,
+      reasoning: String(parsed?.reasoning || 'Saran exclusion dihasilkan oleh AI berdasarkan pola sampel alert.').trim(),
+      rules: cleaned.length ? cleaned : deriveExclusionRulesFromAlerts(alerts, fallbackTitle),
     };
   }
 
@@ -2697,6 +2984,8 @@ function createTriageEngine(options = {}) {
     addExclusionRule,
     updateExclusionRule,
     deleteExclusionRule,
+    suggestExclusionRules,
+    aiSuggestExclusionRules,
     testWazuhConnection,
     testOllamaConnection,
     queryWazuhAlerts,
@@ -2736,8 +3025,11 @@ module.exports = {
   createTriageEngine,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_EXCLUSION_RULES,
+  VALID_EXCLUSION_TARGETS,
+  VALID_EXCLUSION_MODES,
   evaluateExclusions,
   deriveExclusionRuleFromAlerts,
+  deriveExclusionRulesFromAlerts,
   normalizePath,
   resolveTenant,
   severityLabel,

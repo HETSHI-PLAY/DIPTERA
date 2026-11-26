@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126h" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126h" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126h" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126j" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126j" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126j" />
 </head>
 
 <body>
@@ -112,7 +112,6 @@
           </button>
           <button class="sidebar-item" id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="view-history">
             <span id="tab-history-label">Riwayat</span>
-            <span class="tab-count" id="tab-history-count">0</span>
           </button>
           <button class="sidebar-item" id="tab-approvals" type="button" role="tab" aria-selected="false" aria-controls="view-approvals">
             <span>Approval</span>
@@ -131,23 +130,18 @@
         <div class="sidebar-nav">
           <button class="sidebar-item" id="tab-triage" type="button" role="tab" aria-selected="false" aria-controls="view-triage">
             <span>AI Triage</span>
-            <span class="tab-count" id="tab-triage-count">0</span>
           </button>
           <button class="sidebar-item" id="tab-triage-24h" type="button" role="tab" aria-selected="false" aria-controls="view-triage-24h">
             <span>Tarik 24 Jam</span>
-            <span class="tab-count" id="tab-triage-24h-count">0</span>
           </button>
           <button class="sidebar-item" id="tab-live-feed" type="button" role="tab" aria-selected="false" aria-controls="view-live-feed">
             <span>Live Wazuh</span>
-            <span class="tab-count" id="tab-live-count">0</span>
           </button>
           <button class="sidebar-item" id="tab-triage-history" type="button" role="tab" aria-selected="false" aria-controls="view-triage-history">
             <span>Audit Triage</span>
-            <span class="tab-count" id="tab-triage-history-count">0</span>
           </button>
           <button class="sidebar-item" id="tab-triage-exclusions" type="button" role="tab" aria-selected="false" aria-controls="view-triage-exclusions">
             <span>Daftar Exclude</span>
-            <span class="tab-count" id="tab-triage-exclusions-count">0</span>
           </button>
         </div>
       </div>
@@ -1007,20 +1001,27 @@
               <span class="field-label">Target</span>
               <select id="ex-new-target">
                 <option value="path">URL / Request Path</option>
+                <option value="filename">Nama File</option>
+                <option value="rule_description">Rule Description</option>
+                <option value="rule_id">Rule ID</option>
+                <option value="src_ip">Source IP</option>
+                <option value="agent_name">Agent Name</option>
+                <option value="user_agent">User-Agent</option>
                 <option value="full_log">Full Log</option>
               </select>
             </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Mode</span>
               <select id="ex-new-mode">
+                <option value="wildcard" selected>Wildcard (*)</option>
                 <option value="contains">Contains</option>
                 <option value="starts_with">Starts With</option>
                 <option value="regex">Regex</option>
               </select>
             </label>
             <label class="triage-range-field">
-              <span class="field-label">Pola</span>
-              <input type="text" id="ex-new-pattern" placeholder="/cdn-cgi/rum atau kata kunci log" spellcheck="false" />
+              <span class="field-label">Pola (pakai * untuk nilai dinamis)</span>
+              <input type="text" id="ex-new-pattern" placeholder="/service/mhs/*/ip-kemarin atau *.log" spellcheck="false" />
             </label>
             <label class="triage-range-field">
               <span class="field-label">Keterangan (opsional)</span>
@@ -1242,6 +1243,56 @@
     </div>
   </div>
 
+  <div id="exclude-preview-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="ex-modal-title">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-head">
+        <div>
+          <h2 id="ex-modal-title">Pratinjau &amp; Konfirmasi Rule Exclude</h2>
+          <p class="field-hint" id="ex-modal-subtitle">Tinjau pola yang akan dijadikan rule exclude. Ubah manual atau gunakan AI Analisis Exclude bila perlu.</p>
+        </div>
+        <button type="button" class="btn ghost btn-sm" id="btn-close-ex-modal">Tutup</button>
+      </div>
+
+      <div class="wzh-modal-bar">
+        <button type="button" class="btn accent btn-sm" id="btn-ex-modal-ai">AI Analisis Exclude</button>
+        <button type="button" class="btn ghost btn-sm" id="btn-ex-modal-add">+ Tambah Pola Manual</button>
+        <span class="spacer"></span>
+        <span class="field-hint">Tips Wildcard: pakai <code class="mono">*</code> untuk ID/NIM/angka, mis. <code class="mono">/service/mhs/*/ip-kemarin</code></span>
+      </div>
+
+      <div id="ex-modal-ai-msg" class="um-msg" hidden></div>
+
+      <div class="wzh-discover-wrap">
+        <table class="wzh-discover-table wzh-ex-modal-table">
+          <colgroup>
+            <col style="width: 44px" />
+            <col style="width: 148px" />
+            <col style="width: 120px" />
+            <col />
+            <col style="width: 24%" />
+            <col style="width: 72px" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Pakai</th>
+              <th>Target</th>
+              <th>Mode</th>
+              <th>Pola</th>
+              <th>Keterangan</th>
+              <th>Aksi</th>
+            </tr>
+          </thead>
+          <tbody id="ex-modal-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="wzh-modal-foot">
+        <button type="button" class="btn ghost btn-sm" id="btn-ex-modal-cancel">Batal</button>
+        <button type="button" class="btn primary btn-sm" id="btn-ex-modal-confirm">Simpan Rule &amp; Abaikan</button>
+      </div>
+    </div>
+  </div>
+
   <div id="raw-json-modal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="raw-json-title">
     <div class="modal-card">
       <div class="modal-head">
@@ -1262,11 +1313,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126h"></script>
-  <script src="/js/numbering.js?v=20261126h"></script>
-  <script src="/js/extract.js?v=20261126h"></script>
-  <script src="/js/app.js?v=20261126h"></script>
-  <script src="/js/triage-ui.js?v=20261126h"></script>
+  <script src="/config.js?v=20261126j"></script>
+  <script src="/js/numbering.js?v=20261126j"></script>
+  <script src="/js/extract.js?v=20261126j"></script>
+  <script src="/js/app.js?v=20261126j"></script>
+  <script src="/js/triage-ui.js?v=20261126j"></script>
 </body>
 
 </html>

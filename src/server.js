@@ -2802,6 +2802,15 @@ function createServer(options = {}) {
         if (method === 'GET' && pathname === '/api/triage/exclusions') {
           return sendJson(res, method, 200, triage.listExclusionRules());
         }
+        if (method === 'POST' && pathname === '/api/triage/exclusions/suggest') {
+          const body = await readJsonBody(req);
+          return sendJson(res, method, 200, triage.suggestExclusionRules(body || {}));
+        }
+        if (method === 'POST' && pathname === '/api/triage/exclusions/ai-suggest') {
+          const body = await readJsonBody(req);
+          const result = await triage.aiSuggestExclusionRules(body || {});
+          return sendJson(res, method, 200, result);
+        }
         if (method === 'POST' && pathname === '/api/triage/exclusions') {
           const body = await readJsonBody(req);
           const result = triage.addExclusionRule(body || {});

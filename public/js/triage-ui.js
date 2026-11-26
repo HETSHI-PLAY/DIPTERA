@@ -76,6 +76,7 @@
     exFilterMode: 'all',
     exSearch: '',
     exEditingId: null,
+    excludePreviewCtx: null,
     inspector: {
       source: 'queue',
       returnView: 'triage',
@@ -106,6 +107,50 @@
     settingsTab: 'workspace',
     sse: null,
   };
+
+  const EXCLUSION_TARGET_OPTIONS = [
+    { value: 'path', label: 'URL / Request Path' },
+    { value: 'filename', label: 'Nama File' },
+    { value: 'rule_description', label: 'Rule Description' },
+    { value: 'rule_id', label: 'Rule ID' },
+    { value: 'src_ip', label: 'Source IP' },
+    { value: 'agent_name', label: 'Agent Name' },
+    { value: 'user_agent', label: 'User-Agent' },
+    { value: 'full_log', label: 'Full Log' },
+  ];
+  const EXCLUSION_MODE_OPTIONS = [
+    { value: 'wildcard', label: 'Wildcard (*)' },
+    { value: 'contains', label: 'Contains' },
+    { value: 'starts_with', label: 'Starts With' },
+    { value: 'regex', label: 'Regex' },
+  ];
+  const getTargetLabel = (val) => EXCLUSION_TARGET_OPTIONS.find((o) => o.value === val)?.label || val || 'path';
+  const getModeLabel = (val) => EXCLUSION_MODE_OPTIONS.find((o) => o.value === val)?.label || val || 'contains';
+  const buildSelectOptions = (list, selected) => list
+    .map((o) => `<option value="${B.esc(o.value)}" ${selected === o.value ? 'selected' : ''}>${B.esc(o.label)}</option>`)
+    .join('');
+
+  function wireDoubleConfirm(btnEl, confirmLabel, onConfirm) {
+    if (!btnEl) return;
+    const defaultLabel = btnEl.textContent;
+    let timer = null;
+    btnEl.addEventListener('click', async () => {
+      if (btnEl.dataset.armed !== '1') {
+        btnEl.dataset.armed = '1';
+        btnEl.textContent = confirmLabel;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          btnEl.dataset.armed = '0';
+          btnEl.textContent = defaultLabel;
+        }, 5000);
+        return;
+      }
+      clearTimeout(timer);
+      btnEl.dataset.armed = '0';
+      btnEl.textContent = defaultLabel;
+      await onConfirm();
+    });
+  }
 
   function showInlineStatus(el, ok, text) {
     if (!el) return;
@@ -574,26 +619,17 @@
       const isEditing = triageState.exEditingId === rule.id;
       const sourceBadge = rule.source === 'auto_ignore'
         ? '<span class="chip verdict-review">Auto-Exclude</span>'
-        : rule.source === 'default'
-          ? '<span class="chip">Default</span>'
-          : '<span class="chip mode-reporting">Manual</span>';
+        : rule.source === 'ai_suggest'
+          ? '<span class="chip mode-reporting">AI Analisis</span>'
+          : rule.source === 'default'
+            ? '<span class="chip">Default</span>'
+            : '<span class="chip mode-reporting">Manual</span>';
 
       if (isEditing) {
         tr.innerHTML = `
           <td><input type="checkbox" class="ex-edit-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Aktifkan aturan" /></td>
-          <td>
-            <select class="ex-edit-target">
-              <option value="path" ${rule.target === 'path' ? 'selected' : ''}>path</option>
-              <option value="full_log" ${rule.target === 'full_log' ? 'selected' : ''}>full_log</option>
-            </select>
-          </td>
-          <td>
-            <select class="ex-edit-mode">
-              <option value="contains" ${rule.mode === 'contains' ? 'selected' : ''}>contains</option>
-              <option value="starts_with" ${rule.mode === 'starts_with' ? 'selected' : ''}>starts_with</option>
-              <option value="regex" ${rule.mode === 'regex' ? 'selected' : ''}>regex</option>
-            </select>
-          </td>
+          <td><select class="ex-edit-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target)}</select></td>
+          <td><select class="ex-edit-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode)}</select></td>
           <td><input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" spellcheck="false" /></td>
           <td><input type="text" class="ex-edit-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
           <td>
@@ -639,8 +675,8 @@
       } else {
         tr.innerHTML = `
           <td><input type="checkbox" class="act-ex-toggle" ${rule.enabled !== false ? 'checked' : ''} aria-label="Toggle rule ${B.esc(rule.pattern)}" /></td>
-          <td><span class="chip">${B.esc(rule.target === 'full_log' ? 'Full Log' : 'URL Path')}</span></td>
-          <td><span class="mono">${B.esc(rule.mode)}</span></td>
+          <td><span class="chip">${B.esc(getTargetLabel(rule.target))}</span></td>
+          <td><span class="mono">${B.esc(getModeLabel(rule.mode))}</span></td>
           <td class="mono">${B.esc(rule.pattern)}</td>
           <td>
             <div class="wzh-ex-note-cell">
@@ -733,20 +769,13 @@
           <input type="checkbox" class="trg-ex-enabled" aria-label="Aktifkan aturan" ${rule.enabled !== false ? 'checked' : ''} />
         </td>
         <td>
-          <select class="trg-ex-target" aria-label="Target field">
-            <option value="path" ${rule.target === 'path' ? 'selected' : ''}>URL / Request Path</option>
-            <option value="full_log" ${rule.target === 'full_log' ? 'selected' : ''}>Full Log</option>
-          </select>
+          <select class="trg-ex-target" aria-label="Target field">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target || 'path')}</select>
         </td>
         <td>
-          <select class="trg-ex-mode" aria-label="Mode pencocokan">
-            <option value="contains" ${rule.mode === 'contains' ? 'selected' : ''}>Contains</option>
-            <option value="starts_with" ${rule.mode === 'starts_with' ? 'selected' : ''}>Starts With</option>
-            <option value="regex" ${rule.mode === 'regex' ? 'selected' : ''}>Regex</option>
-          </select>
+          <select class="trg-ex-mode" aria-label="Mode pencocokan">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode || 'contains')}</select>
         </td>
         <td>
-          <input type="text" class="trg-ex-pattern" value="${B.esc(rule.pattern || '')}" placeholder="/login.php atau regex" spellcheck="false" aria-label="Pola pengecualian" />
+          <input type="text" class="trg-ex-pattern" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin atau regex" spellcheck="false" aria-label="Pola pengecualian" />
         </td>
         <td>
           <input type="text" class="trg-ex-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan (opsional)" aria-label="Keterangan aturan" />
@@ -770,7 +799,7 @@
       rules.push({
         id: tr.dataset.ruleId || ('ex_' + Math.random().toString(36).slice(2, 8)),
         enabled: Boolean($('.trg-ex-enabled', tr)?.checked),
-        target: $('.trg-ex-target', tr)?.value === 'full_log' ? 'full_log' : 'path',
+        target: $('.trg-ex-target', tr)?.value || 'path',
         mode: $('.trg-ex-mode', tr)?.value || 'contains',
         pattern,
         note: ($('.trg-ex-note', tr)?.value || '').trim(),
@@ -1138,17 +1167,105 @@
     };
   }
 
+  function renderExcludePreviewRows(rules = []) {
+    const tbody = $('#ex-modal-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    for (const rule of rules) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="checkbox" class="exm-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Gunakan rule ini" /></td>
+        <td><select class="exm-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target || 'path')}</select></td>
+        <td><select class="exm-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode || 'wildcard')}</select></td>
+        <td><input type="text" class="exm-pattern mono" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin" spellcheck="false" /></td>
+        <td><input type="text" class="exm-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
+        <td><button type="button" class="btn danger btn-xs exm-del">Hapus</button></td>
+      `;
+      tr.dataset.source = rule.source || 'auto_ignore';
+      $('.exm-del', tr)?.addEventListener('click', () => tr.remove());
+      tbody.appendChild(tr);
+    }
+  }
+
+  function collectExcludePreviewRows() {
+    const tbody = $('#ex-modal-tbody');
+    if (!tbody) return [];
+    const out = [];
+    tbody.querySelectorAll('tr').forEach((tr) => {
+      const enabled = Boolean($('.exm-enabled', tr)?.checked);
+      const pattern = ($('.exm-pattern', tr)?.value || '').trim();
+      if (!enabled || !pattern) return;
+      out.push({
+        enabled: true,
+        target: $('.exm-target', tr)?.value || 'path',
+        mode: $('.exm-mode', tr)?.value || 'wildcard',
+        pattern,
+        source: tr.dataset.source || 'auto_ignore',
+        note: ($('.exm-note', tr)?.value || '').trim(),
+      });
+    });
+    return out;
+  }
+
+  function closeExcludePreviewModal() {
+    const modal = $('#exclude-preview-modal');
+    if (modal) modal.hidden = true;
+    triageState.excludePreviewCtx = null;
+  }
+
+  async function openExcludePreviewModal(ctx) {
+    const modal = $('#exclude-preview-modal');
+    if (!modal) return;
+    triageState.excludePreviewCtx = ctx;
+    const msgEl = $('#ex-modal-ai-msg');
+    showInlineStatus(msgEl, true, '');
+    if ($('#ex-modal-subtitle')) {
+      $('#ex-modal-subtitle').textContent = ctx.subtitle || 'Tinjau pola yang akan dijadikan rule exclude. Ubah manual atau klik AI Analisis Exclude.';
+    }
+    if ($('#btn-ex-modal-confirm')) {
+      $('#btn-ex-modal-confirm').textContent = ctx.source === 'live' ? 'Simpan Rule Exclude' : 'Simpan Rule & Abaikan';
+    }
+    renderExcludePreviewRows([]);
+    modal.hidden = false;
+
+    try {
+      const res = await B.apiFetch('/api/triage/exclusions/suggest', {
+        method: 'POST',
+        body: JSON.stringify({
+          source: ctx.source,
+          groupId: ctx.groupId,
+          groupIds: ctx.groupIds,
+          alertIds: ctx.alertIds,
+          rawAlerts: ctx.rawAlerts,
+          title: ctx.title,
+        }),
+      });
+      renderExcludePreviewRows(res.rules || []);
+    } catch (err) {
+      showInlineStatus(msgEl, false, err.message);
+      renderExcludePreviewRows([{ enabled: true, target: 'path', mode: 'wildcard', pattern: '', note: '', source: 'manual' }]);
+    }
+  }
+
   function showIgnoreExcludeToast(res, fallbackPrefix) {
     const added = res.rulesAdded || [];
     const existing = res.rulesExisting || [];
-    const rule = added[0] || existing[0];
-    if (added.length) {
+    if (added.length > 1) {
+      const preview = added.slice(0, 3).map((r) => r.pattern).join(', ') + (added.length > 3 ? ` (+${added.length - 3} lainnya)` : '');
+      B.toast({
+        type: 'success',
+        title: `${fallbackPrefix}: ${added.length} Rule Exclude spesifik dibuat`,
+        body: preview,
+      });
+    } else if (added.length === 1) {
+      const rule = added[0];
       B.toast({
         type: 'success',
         title: `${fallbackPrefix}: Rule Exclude otomatis dibuat`,
         body: `${rule.target} [${rule.mode}]: ${rule.pattern}`,
       });
     } else if (existing.length) {
+      const rule = existing[0];
       B.toast({
         type: 'info',
         title: `${fallbackPrefix} (rule sudah terdaftar)`,
@@ -1402,21 +1519,19 @@
         }
       });
 
-      $('.act-insp-doc-ignore', expTr)?.addEventListener('click', async () => {
-        try {
-          const res = await B.apiFetch(`${apiPrefix}/ignore-exclude`, {
-            method: 'POST',
-            body: JSON.stringify({ groupId: insp.groupId, alertIds: [row.alert_id] }),
-          });
-          syncSnapshotAndExclusions(res, isBatch24h);
-          refreshInspectorIfOpen();
-          showIgnoreExcludeToast(res, 'Alert diabaikan');
-        } catch (err) {
-          B.toast({ type: 'error', title: 'Gagal membuat rule exclude', body: err.message });
-        }
+      $('.act-insp-doc-ignore', expTr)?.addEventListener('click', () => {
+        openExcludePreviewModal({
+          source: insp.source,
+          isBatch24h,
+          groupId: insp.groupId,
+          alertIds: [row.alert_id],
+          title: row.rule_description || insp.title,
+          subtitle: 'Pratinjau rule exclude untuk 1 alert terpilih.',
+          toastTitle: 'Alert diabaikan',
+        });
       });
 
-      $('.act-insp-doc-remove', expTr)?.addEventListener('click', async () => {
+      wireDoubleConfirm($('.act-insp-doc-remove', expTr), 'Klik lagi untuk Hapus', async () => {
         try {
           const res = await B.apiFetch(`${apiPrefix}/remove-alerts`, {
             method: 'POST',
@@ -1529,20 +1644,18 @@
         });
       });
 
-      $('.act-trg-ignore-exclude', card)?.addEventListener('click', async () => {
-        try {
-          const res = await B.apiFetch(`${apiPrefix}/ignore-exclude`, {
-            method: 'POST',
-            body: JSON.stringify({ groupIds: [g.group_id] }),
-          });
-          syncSnapshotAndExclusions(res, isBatch24h);
-          showIgnoreExcludeToast(res, 'Grup diabaikan');
-        } catch (err) {
-          B.toast({ type: 'error', title: 'Gagal mengabaikan & membuat exclude', body: err.message });
-        }
+      $('.act-trg-ignore-exclude', card)?.addEventListener('click', () => {
+        openExcludePreviewModal({
+          source: isBatch24h ? 'batch24h' : 'queue',
+          isBatch24h,
+          groupIds: [g.group_id],
+          title: g.incident_title || 'Security Incident',
+          subtitle: `Pratinjau rule exclude untuk grup "${g.incident_title || g.group_id}" (${g.alert_count || g.alerts?.length || 0} alert).`,
+          toastTitle: 'Grup diabaikan',
+        });
       });
 
-      $('.act-trg-dismiss', card)?.addEventListener('click', async () => {
+      wireDoubleConfirm($('.act-trg-dismiss', card), 'Klik lagi untuk Hapus', async () => {
         try {
           const res = await B.apiFetch(`${apiPrefix}/dismiss`, {
             method: 'POST',
@@ -1899,30 +2012,14 @@
         });
       });
 
-      $('.act-live-doc-exclude', expTr)?.addEventListener('click', async () => {
-        try {
-          const res = await B.apiFetch('/api/triage/exclusions', {
-            method: 'POST',
-            body: JSON.stringify({
-              rawAlert: it.raw_wazuh_alert,
-              fallbackTitle: it.rule_description,
-            }),
-          });
-          if (Array.isArray(res?.rules)) {
-            triageState.exclusions = res.rules;
-            if (triageState.config) triageState.config.exclusionRules = res.rules;
-            renderExclusionRows(res.rules);
-            renderExclusionsPage();
-          }
-          B.toast({
-            type: res.alreadyExisted ? 'info' : 'success',
-            title: res.alreadyExisted ? 'Rule Exclude sudah ada' : 'Rule Exclude ditambahkan',
-            body: `${res.rule.target} [${res.rule.mode}]: ${res.rule.pattern}`,
-          });
-          fetchLiveFeed(true);
-        } catch (err) {
-          B.toast({ type: 'error', title: 'Gagal membuat rule exclude', body: err.message });
-        }
+      $('.act-live-doc-exclude', expTr)?.addEventListener('click', () => {
+        openExcludePreviewModal({
+          source: 'live',
+          rawAlerts: [{ alert_id: it.alert_id, raw_wazuh_alert: it.raw_wazuh_alert }],
+          title: it.rule_description || 'Live Wazuh Alert',
+          subtitle: 'Pratinjau rule exclude dari alert Live Wazuh (dapat diedit manual atau analisis AI).',
+          toastTitle: 'Rule Exclude ditambahkan',
+        });
       });
     });
   }
@@ -2236,7 +2333,7 @@
       }
     });
 
-    $('#btn-triage-dismiss-fp')?.addEventListener('click', async () => {
+    wireDoubleConfirm($('#btn-triage-dismiss-fp'), 'Klik lagi untuk Hapus FP', async () => {
       try {
         const res = await B.apiFetch('/api/triage/dismiss', {
           method: 'POST',
@@ -2265,28 +2362,6 @@
         B.toast({ type: 'error', title: 'Gagal mereset antrean', body: err.message });
       }
     });
-
-    const wireDoubleConfirm = (btnEl, confirmLabel, onConfirm) => {
-      if (!btnEl) return;
-      const defaultLabel = btnEl.textContent;
-      let timer = null;
-      btnEl.addEventListener('click', async () => {
-        if (btnEl.dataset.armed !== '1') {
-          btnEl.dataset.armed = '1';
-          btnEl.textContent = confirmLabel;
-          clearTimeout(timer);
-          timer = setTimeout(() => {
-            btnEl.dataset.armed = '0';
-            btnEl.textContent = defaultLabel;
-          }, 5000);
-          return;
-        }
-        clearTimeout(timer);
-        btnEl.dataset.armed = '0';
-        btnEl.textContent = defaultLabel;
-        await onConfirm();
-      });
-    };
 
     const purgeTriageStateUi = async () => {
       try {
@@ -2421,7 +2496,7 @@
       }
     });
 
-    $('#btn-b24-dismiss-fp')?.addEventListener('click', async () => {
+    wireDoubleConfirm($('#btn-b24-dismiss-fp'), 'Klik lagi untuk Hapus FP', async () => {
       try {
         const res = await B.apiFetch('/api/triage/batch24h/dismiss', {
           method: 'POST',
@@ -2627,9 +2702,17 @@
       });
     });
     $('#btn-insp-group-ignore')?.addEventListener('click', () => {
-      runInspectorGroupAction('/ignore-exclude', { groupIds: [triageState.inspector.groupId] }, 'Grup diabaikan', true);
+      const insp = triageState.inspector;
+      openExcludePreviewModal({
+        source: insp.source,
+        isBatch24h: insp.source === 'batch24h',
+        groupIds: [insp.groupId],
+        title: insp.title,
+        subtitle: `Pratinjau rule exclude untuk seluruh grup "${insp.title}" (${insp.alerts.length} alert).`,
+        toastTitle: 'Grup diabaikan',
+      });
     });
-    $('#btn-insp-group-dismiss')?.addEventListener('click', () => {
+    wireDoubleConfirm($('#btn-insp-group-dismiss'), 'Klik lagi untuk Hapus Grup', () => {
       runInspectorGroupAction('/dismiss', { groupIds: [triageState.inspector.groupId] }, 'Grup dihapus dari antrean', false);
     });
     $('#btn-insp-split')?.addEventListener('click', () => {
@@ -2642,9 +2725,17 @@
       const insp = triageState.inspector;
       const ids = [...insp.selectedIds];
       if (!ids.length) return;
-      runInspectorGroupAction('/ignore-exclude', { groupId: insp.groupId, alertIds: ids }, `${ids.length} alert diabaikan`, true);
+      openExcludePreviewModal({
+        source: insp.source,
+        isBatch24h: insp.source === 'batch24h',
+        groupId: insp.groupId,
+        alertIds: ids,
+        title: insp.title,
+        subtitle: `Pratinjau rule exclude untuk ${ids.length} alert terpilih.`,
+        toastTitle: `${ids.length} alert diabaikan`,
+      });
     });
-    $('#btn-insp-remove-sel')?.addEventListener('click', () => {
+    wireDoubleConfirm($('#btn-insp-remove-sel'), 'Klik lagi untuk Hapus Terpilih', () => {
       const insp = triageState.inspector;
       const ids = [...insp.selectedIds];
       if (!ids.length) return;
@@ -2674,6 +2765,112 @@
     $('#btn-copy-raw-json')?.addEventListener('click', () => B.copyText($('#raw-json-pre')?.textContent || '', 'Raw Wazuh JSON'));
     $('#raw-json-modal')?.addEventListener('click', (e) => {
       if (e.target === $('#raw-json-modal')) closeRawJsonModal();
+    });
+
+    // Exclude Preview Modal Controls (AI Analisis Exclude + Manual Edit)
+    $('#btn-close-ex-modal')?.addEventListener('click', closeExcludePreviewModal);
+    $('#btn-ex-modal-cancel')?.addEventListener('click', closeExcludePreviewModal);
+    $('#exclude-preview-modal')?.addEventListener('click', (e) => {
+      if (e.target === $('#exclude-preview-modal')) closeExcludePreviewModal();
+    });
+    $('#btn-ex-modal-add')?.addEventListener('click', () => {
+      const existing = [];
+      $('#ex-modal-tbody')?.querySelectorAll('tr').forEach((tr) => {
+        existing.push({
+          enabled: Boolean($('.exm-enabled', tr)?.checked),
+          target: $('.exm-target', tr)?.value || 'path',
+          mode: $('.exm-mode', tr)?.value || 'wildcard',
+          pattern: $('.exm-pattern', tr)?.value || '',
+          note: $('.exm-note', tr)?.value || '',
+          source: tr.dataset.source || 'manual',
+        });
+      });
+      existing.push({ enabled: true, target: 'path', mode: 'wildcard', pattern: '', note: 'Aturan manual analis', source: 'manual' });
+      renderExcludePreviewRows(existing);
+    });
+    $('#btn-ex-modal-ai')?.addEventListener('click', async () => {
+      const ctx = triageState.excludePreviewCtx;
+      if (!ctx) return;
+      const btn = $('#btn-ex-modal-ai');
+      const msgEl = $('#ex-modal-ai-msg');
+      const prevText = btn?.textContent || 'AI Analisis Exclude';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Menganalisis AI…';
+      }
+      showInlineStatus(msgEl, true, 'Mengirim sampel alert ke AI Ollama untuk merumuskan rule exclude presisi…');
+      try {
+        const res = await B.apiFetch('/api/triage/exclusions/ai-suggest', {
+          method: 'POST',
+          body: JSON.stringify({
+            source: ctx.source,
+            groupId: ctx.groupId,
+            groupIds: ctx.groupIds,
+            alertIds: ctx.alertIds,
+            rawAlerts: ctx.rawAlerts,
+            title: ctx.title,
+          }),
+        });
+        renderExcludePreviewRows((res.rules || []).map((r) => ({ ...r, enabled: true, source: 'ai_suggest' })));
+        showInlineStatus(msgEl, true, res.reasoning || 'Saran AI berhasil dimuat. Anda dapat mengedit pola sebelum menyimpan.');
+      } catch (err) {
+        showInlineStatus(msgEl, false, err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
+      }
+    });
+    $('#btn-ex-modal-confirm')?.addEventListener('click', async () => {
+      const ctx = triageState.excludePreviewCtx;
+      if (!ctx) return;
+      const rules = collectExcludePreviewRows();
+      if (!rules.length) {
+        B.toast({ type: 'error', title: 'Pilih atau isi minimal 1 pola rule exclude' });
+        return;
+      }
+      const btn = $('#btn-ex-modal-confirm');
+      if (btn) btn.disabled = true;
+      try {
+        if (ctx.source === 'live') {
+          let lastRes = null;
+          for (const r of rules) {
+            lastRes = await B.apiFetch('/api/triage/exclusions', {
+              method: 'POST',
+              body: JSON.stringify(r),
+            });
+          }
+          if (Array.isArray(lastRes?.rules)) {
+            triageState.exclusions = lastRes.rules;
+            if (triageState.config) triageState.config.exclusionRules = lastRes.rules;
+            renderExclusionRows(lastRes.rules);
+            renderExclusionsPage();
+          }
+          closeExcludePreviewModal();
+          B.toast({ type: 'success', title: `${rules.length} Rule Exclude disimpan` });
+          fetchLiveFeed(true);
+        } else {
+          const apiPrefix = ctx.isBatch24h ? '/api/triage/batch24h' : '/api/triage';
+          const res = await B.apiFetch(`${apiPrefix}/ignore-exclude`, {
+            method: 'POST',
+            body: JSON.stringify({
+              groupId: ctx.groupId,
+              groupIds: ctx.groupIds,
+              alertIds: ctx.alertIds,
+              rules,
+            }),
+          });
+          syncSnapshotAndExclusions(res, ctx.isBatch24h);
+          closeExcludePreviewModal();
+          refreshInspectorIfOpen();
+          showIgnoreExcludeToast(res, ctx.toastTitle || 'Diabaikan');
+        }
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal menyimpan rule exclude', body: err.message });
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     });
   }
 

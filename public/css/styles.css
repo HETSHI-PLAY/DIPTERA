@@ -3433,6 +3433,32 @@ textarea {
   flex-wrap: wrap;
 }
 
+.modal-card-wide {
+  max-width: 920px;
+}
+
+.wzh-modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wzh-ex-modal-table input[type="text"],
+.wzh-ex-modal-table select {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.wzh-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
