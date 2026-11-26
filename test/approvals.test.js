@@ -633,7 +633,17 @@ function req(port, method, urlPath, body, extraHeaders = {}) {
       assert.ok(multipartDecoded.includes('"wazuh-alerts-4.x-2026.11.24"'));
     }
 
-    console.log('ALL_APPROVAL_TESTS_PASSED (8/8)');
+    // 9. Bulk clear History & Approvals endpoints
+    const clrHist = await req(port, 'DELETE', '/api/history?workspace=asoc');
+    assert.equal(clrHist.status, 200);
+    assert.equal(clrHist.json.ok, true);
+
+    const clrAppr = await req(port, 'DELETE', '/api/approvals?workspace=all&status=all');
+    assert.equal(clrAppr.status, 200);
+    assert.equal(clrAppr.json.ok, true);
+    assert.equal(clrAppr.json.counts.total, 0);
+
+    console.log('ALL_APPROVAL_TESTS_PASSED (9/9)');
   } finally {
     server.close();
     secServer.close();

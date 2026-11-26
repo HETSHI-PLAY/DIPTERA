@@ -1381,6 +1381,33 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env, storeOpts = 
       });
     },
 
+    clearHistory(workspace = 'all') {
+      return withLock(() => {
+        const wsRaw = String(workspace || 'all').trim().toLowerCase();
+        const wsFilter = wsRaw === 'all' ? null : normalizeWorkspace(wsRaw, 'asoc');
+        const removed = [];
+        const kept = [];
+        for (const item of history) {
+          if (!wsFilter || normalizeWorkspace(item.workspace, 'asoc') === wsFilter) {
+            removed.push(item);
+          } else {
+            kept.push(item);
+          }
+        }
+        history = kept;
+        if (pgBackend) {
+          for (const item of removed) queuePg(() => pgBackend.deleteHistory(item.id));
+        } else if (removed.length > 0 || wsFilter === null) {
+          atomicWriteJson(historyPath, history);
+        }
+        return {
+          ok: true,
+          deletedCount: removed.length,
+          total: history.length,
+        };
+      });
+    },
+
     handleN8nCallback(payload = {}) {
       return withLock(() => {
         const event = String(payload.event || 'report_ready').trim();
@@ -1938,6 +1965,55 @@ function createStore(dataDir = DEFAULT_DATA_DIR, env = process.env, storeOpts = 
         return {
           ok: true,
           counts: approvalCounts(),
+        };
+      });
+    },
+
+    clearApprovals({ workspace = 'all', status = 'all' } = {}) {
+      return withLock(() => {
+        refreshExpiredApprovals();
+        const wsRaw = String(workspace || 'all').trim().toLowerCase();
+        const wsFilter = wsRaw === 'all' ? null : normalizeWorkspace(wsRaw, 'asoc');
+        const stRaw = String(status || 'all').trim().toLowerCase();
+        const stFilter = stRaw === 'all' ? null : stRaw;
+
+        const removedAppr = [];
+        const keptAppr = [];
+        for (const item of approvals) {
+          const matchWs = !wsFilter || normalizeWorkspace(item.workspace, 'asoc') === wsFilter;
+          const matchSt = !stFilter || String(item.status || '').toLowerCase() === stFilter;
+          if (matchWs && matchSt) removedAppr.push(item);
+          else keptAppr.push(item);
+        }
+        approvals = keptAppr;
+
+        const removedRej = [];
+        if (!stFilter || stFilter === 'denied') {
+          const keptRej = [];
+          for (const rej of rejections) {
+            const matchWs = !wsFilter || normalizeWorkspace(rej.workspace, 'asoc') === wsFilter;
+            if (matchWs) removedRej.push(rej);
+            else keptRej.push(rej);
+          }
+          rejections = keptRej;
+        }
+
+        if (pgBackend) {
+          for (const item of removedAppr) queuePg(() => pgBackend.deleteApproval(item.id));
+          for (const item of removedRej) queuePg(() => pgBackend.deleteRejection(item.id));
+        } else {
+          if (removedAppr.length > 0 || !wsFilter) atomicWriteJson(approvalsPath, approvals);
+          if (removedRej.length > 0 || (!wsFilter && (!stFilter || stFilter === 'denied'))) {
+            atomicWriteJson(rejectionsPath, rejections);
+          }
+        }
+
+        return {
+          ok: true,
+          deletedCount: removedAppr.length,
+          deletedRejections: removedRej.length,
+          counts: approvalCounts(),
+          rejectionCounts: rejectionCounts(),
         };
       });
     },
@@ -2533,6 +2609,11 @@ function createServer(options = {}) {
           });
           return sendJson(res, method, 200, data);
         }
+        if (method === 'DELETE' && pathname === '/api/history') {
+          const ws = urlObj.searchParams.get('workspace') || 'all';
+          const result = await store.clearHistory(ws);
+          return sendJson(res, method, 200, result);
+        }
         if (method === 'POST' && pathname === '/api/history') {
           const body = await readJsonBody(req);
           const record = await store.createHistory(body, reqUser);
@@ -2578,6 +2659,13 @@ function createServer(options = {}) {
             limit: urlObj.searchParams.get('limit'),
           });
           return sendJson(res, method, 200, data);
+        }
+        if (method === 'DELETE' && pathname === '/api/approvals') {
+          const result = await store.clearApprovals({
+            workspace: urlObj.searchParams.get('workspace') || 'all',
+            status: urlObj.searchParams.get('status') || 'all',
+          });
+          return sendJson(res, method, 200, result);
         }
         if (pathname.startsWith('/api/approvals/')) {
           const rest = pathname.slice('/api/approvals/'.length);

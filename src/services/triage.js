@@ -443,6 +443,7 @@ function createTriageEngine(options = {}) {
   let pollTimer = null;
   let pollLock = Promise.resolve();
   let ollamaLock = Promise.resolve();
+  let pollEpoch = 0;
   let pollInFlight = false;
   const sseClients = new Set();
 
@@ -1065,11 +1066,17 @@ function createTriageEngine(options = {}) {
     return { excludedCount, byTenantBuckets };
   }
 
-  async function processHitsIntoQueue(hits) {
+  async function processHitsIntoQueue(hits, runEpoch = null) {
+    if (runEpoch != null && runEpoch !== pollEpoch) {
+      return { excludedCount: 0, analyzedCount: 0, aborted: true };
+    }
     const { excludedCount, byTenantBuckets } = preGroupByTenant(hits);
     let analyzedCount = 0;
 
     for (const [tenant, bucketMap] of byTenantBuckets.entries()) {
+      if (runEpoch != null && runEpoch !== pollEpoch) {
+        return { excludedCount, analyzedCount, aborted: true };
+      }
       const candidates = [...bucketMap.values()];
       if (!candidates.length) continue;
 
@@ -1080,6 +1087,9 @@ function createTriageEngine(options = {}) {
       const aiMap = new Map();
       const chunkErrors = new Map();
       for (let i = 0; i < candidates.length; i += OLLAMA_MICRO_BATCH_SIZE) {
+        if (runEpoch != null && runEpoch !== pollEpoch) {
+          return { excludedCount, analyzedCount, aborted: true };
+        }
         const chunk = candidates.slice(i, i + OLLAMA_MICRO_BATCH_SIZE);
         try {
           const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
@@ -1088,6 +1098,10 @@ function createTriageEngine(options = {}) {
           const msg = err.message || 'Ollama tidak terjangkau';
           for (const c of chunk) chunkErrors.set(c.candidateId, msg);
         }
+      }
+
+      if (runEpoch != null && runEpoch !== pollEpoch) {
+        return { excludedCount, analyzedCount, aborted: true };
       }
 
       const mergedInTenant = new Map();
@@ -1218,7 +1232,11 @@ function createTriageEngine(options = {}) {
   function pollOnce(opts = {}) {
     const win = resolvePollWindow(opts);
     const maxSize = Math.min(Math.max(1, Number(opts?.size) || 500), 1000);
+    const runEpoch = pollEpoch;
     const run = pollLock.then(async () => {
+      if (runEpoch !== pollEpoch) {
+        return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
+      }
       if (!String(config.wazuh.url || '').trim()) {
         return { ok: false, skipped: true, reason: 'Wazuh Indexer URL belum diatur' };
       }
@@ -1235,7 +1253,13 @@ function createTriageEngine(options = {}) {
           minLevel: config.wazuh.minRuleLevel,
           maxLevel: config.wazuh.maxRuleLevel,
         });
-        const { excludedCount, analyzedCount } = await processHitsIntoQueue(hits);
+        if (runEpoch !== pollEpoch) {
+          return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
+        }
+        const { excludedCount, analyzedCount, aborted } = await processHitsIntoQueue(hits, runEpoch);
+        if (aborted || runEpoch !== pollEpoch) {
+          return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
+        }
         state.workerStatus.lastSuccessAt = new Date().toISOString();
         state.workerStatus.lastError = null;
         state.workerStatus.lastBatchCount = hits.length;
@@ -1252,6 +1276,9 @@ function createTriageEngine(options = {}) {
           snapshot: getQueueSnapshot(),
         };
       } catch (err) {
+        if (runEpoch !== pollEpoch) {
+          return { ok: true, aborted: true, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
+        }
         state.workerStatus.lastError = err.message || 'Gagal polling Wazuh Indexer';
         saveState();
         broadcastSse('state', getQueueSnapshot());
@@ -1273,6 +1300,7 @@ function createTriageEngine(options = {}) {
     if (config.workerEnabled && String(config.wazuh.url || '').trim()) {
       const intervalMs = Math.max(1, Number(config.wazuh.pollIntervalMin || 3)) * 60 * 1000;
       pollTimer = setInterval(() => {
+        if (!config.workerEnabled) return;
         pollOnce().catch(() => {});
       }, intervalMs);
       if (typeof pollTimer.unref === 'function') pollTimer.unref();
@@ -1280,8 +1308,12 @@ function createTriageEngine(options = {}) {
   }
 
   function updateConfig(patch = {}) {
+    const wasEnabled = Boolean(config.workerEnabled);
     const next = cloneJson(config);
     if (patch.workerEnabled !== undefined) next.workerEnabled = Boolean(patch.workerEnabled);
+    if ((wasEnabled && !next.workerEnabled) || patch.workerEnabled === false) {
+      pollEpoch++;
+    }
 
     if (patch.wazuh && typeof patch.wazuh === 'object') {
       const pwIn = patch.wazuh;
@@ -1634,6 +1666,7 @@ function createTriageEngine(options = {}) {
   }
 
   function resetQueue(watermarkIso) {
+    pollEpoch++;
     const newWatermark = watermarkIso && !Number.isNaN(Date.parse(watermarkIso))
       ? new Date(watermarkIso).toISOString()
       : new Date().toISOString();
@@ -1659,6 +1692,7 @@ function createTriageEngine(options = {}) {
   function purgeTriageDatabase({ clearState = true, includeHistory = false, resetWatermarkToNow = false } = {}) {
     const doClearState = clearState !== false;
     const doIncludeHistory = Boolean(includeHistory);
+    if (doClearState) pollEpoch++;
     const clearedGroups = doClearState ? state.groups.length : 0;
     const clearedProcessed = doClearState ? state.processedAlertIds.length : 0;
     const clearedDismissed = doClearState ? state.dismissedAlertIds.length : 0;

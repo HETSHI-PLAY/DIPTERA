@@ -13,6 +13,11 @@
     FALSE_POSITIVE: { label: 'False Positive', cls: 'verdict-fp' },
   };
 
+  const LIVE_AUTO_REFRESH_KEY = 'diptera.liveAutoRefresh';
+  const storedLiveAuto = (() => {
+    try { return localStorage.getItem(LIVE_AUTO_REFRESH_KEY) === '1'; } catch { return false; }
+  })();
+
   let triageState = {
     config: null,
     snapshot: null,
@@ -24,7 +29,8 @@
     selectedSubAlertsByGroup: new Map(),
     liveData: null,
     liveScope: 'watermark',
-    liveAutoRefresh: true,
+    liveAutoRefresh: storedLiveAuto,
+    liveFetchSeq: 0,
     liveTimer: null,
     historyData: null,
     settingsTab: 'workspace',
@@ -709,26 +715,55 @@
     if (!tbody || !emptyEl) return;
 
     if (!data) {
-      if (parityEl) parityEl.textContent = 'Belum dimuat';
+      if (parityEl) {
+        parityEl.textContent = 'Belum dimuat (klik Segarkan Live)';
+        parityEl.className = 'sync-pill offline';
+      }
+      const tabCount = $('#tab-live-count');
+      if (tabCount) tabCount.textContent = '0';
       tbody.innerHTML = '';
       emptyEl.hidden = false;
       return;
     }
 
+    const rawItems = data.items || [];
+    const tenants = [...new Set(rawItems.map((i) => i.tenant).filter(Boolean))].sort();
+    populateTriageTenantSelect($('#live-filter-tenant'), tenants);
+
+    const tenantFilter = ($('#live-filter-tenant')?.value || '').trim().toLowerCase();
+    const statusFilter = ($('#live-filter-status')?.value || '').trim();
+    const q = ($('#live-search')?.value || '').trim().toLowerCase();
+
+    const items = rawItems.filter((it) => {
+      if (tenantFilter && String(it.tenant || '').toLowerCase() !== tenantFilter) return false;
+      if (statusFilter && it.status_code !== statusFilter) return false;
+      if (q) {
+        const hay = [
+          it.alert_id,
+          it.tenant,
+          it.agent_name,
+          it.rule_id,
+          it.rule_description,
+          it.src_ip,
+          it.path,
+          it.status_label,
+          it.raw_wazuh_alert?.full_log,
+        ].join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
     if (parityEl) {
       const matchTag = data.parityMatch ? '1:1 Match' : 'Terfilter';
-      parityEl.textContent = `Wazuh Hits: ${data.totalHits} | Ditampilkan: ${data.displayedCount} (${matchTag})`;
+      parityEl.textContent = `Wazuh Hits: ${data.totalHits} | Ditampilkan: ${items.length} (${matchTag})`;
       parityEl.className = 'sync-pill ' + (data.parityMatch ? '' : 'offline');
     }
 
     const tabCount = $('#tab-live-count');
     if (tabCount) tabCount.textContent = String(data.totalHits ?? data.rawCount ?? 0);
 
-    const tenants = [...new Set((data.items || []).map((i) => i.tenant).filter(Boolean))].sort();
-    populateTriageTenantSelect($('#live-filter-tenant'), tenants);
-
     tbody.innerHTML = '';
-    const items = data.items || [];
     if (!items.length) {
       emptyEl.hidden = false;
       return;
@@ -774,17 +809,17 @@
   }
 
   async function fetchLiveFeed(silent = false) {
+    const seq = ++triageState.liveFetchSeq;
     const scope = $('#live-scope-select')?.value || 'watermark';
-    const tenant = $('#live-filter-tenant')?.value || '';
-    const status = $('#live-filter-status')?.value || '';
-    const q = ($('#live-search')?.value || '').trim();
-    const params = new URLSearchParams({ scope, tenant, status, q });
+    const params = new URLSearchParams({ scope });
 
     try {
       const data = await B.apiFetch('/api/triage/live?' + params.toString());
+      if (seq !== triageState.liveFetchSeq) return;
       triageState.liveData = data;
       renderLiveFeed();
     } catch (err) {
+      if (seq !== triageState.liveFetchSeq) return;
       if (!silent) B.toast({ type: 'error', title: 'Gagal menarik Realtime Wazuh Feed', body: err.message });
     }
   }
@@ -798,10 +833,16 @@
 
   function startLiveRefreshIfActive() {
     stopLiveRefresh();
-    if (!$('#live-auto-refresh')?.checked) return;
+    const cb = $('#live-auto-refresh');
+    if (!cb || !cb.checked) return;
     const sec = Math.max(3, Number(triageState.config?.wazuh?.liveRefreshSec || 10));
     triageState.liveTimer = setInterval(() => {
-      if (!$('#view-live-feed')?.hidden) fetchLiveFeed(true);
+      const curCb = $('#live-auto-refresh');
+      if (curCb?.checked && !$('#view-live-feed')?.hidden) {
+        fetchLiveFeed(true);
+      } else if (!curCb?.checked) {
+        stopLiveRefresh();
+      }
     }, sec * 1000);
   }
 
@@ -1095,7 +1136,7 @@
       });
     };
 
-    wireDoubleConfirm($('#btn-triage-purge'), 'Klik lagi untuk Hapus DB Triage', async () => {
+    const purgeTriageStateUi = async () => {
       try {
         const res = await B.apiFetch('/api/triage/purge', {
           method: 'POST',
@@ -1114,9 +1155,9 @@
       } catch (err) {
         B.toast({ type: 'error', title: 'Gagal menghapus database triage', body: err.message });
       }
-    });
+    };
 
-    wireDoubleConfirm($('#btn-triage-purge-history'), 'Klik lagi untuk Hapus Audit', async () => {
+    const purgeTriageAuditUi = async () => {
       try {
         const res = await B.apiFetch('/api/triage/purge', {
           method: 'POST',
@@ -1135,7 +1176,12 @@
       } catch (err) {
         B.toast({ type: 'error', title: 'Gagal menghapus Audit Triage', body: err.message });
       }
-    });
+    };
+
+    wireDoubleConfirm($('#btn-triage-purge'), 'Klik lagi untuk Hapus DB Triage', purgeTriageStateUi);
+    wireDoubleConfirm($('#btn-set-purge-triage'), 'Klik lagi untuk Kosongkan DB Triage', purgeTriageStateUi);
+    wireDoubleConfirm($('#btn-triage-purge-history'), 'Klik lagi untuk Hapus Audit', purgeTriageAuditUi);
+    wireDoubleConfirm($('#btn-set-purge-audit'), 'Klik lagi untuk Kosongkan Audit', purgeTriageAuditUi);
 
     document.querySelectorAll('.trg-verdict-btn[data-verdict]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1169,12 +1215,40 @@
     });
 
     // Live Feed Controls
+    if ($('#live-auto-refresh')) {
+      $('#live-auto-refresh').checked = Boolean(triageState.liveAutoRefresh);
+    }
     $('#btn-live-refresh')?.addEventListener('click', () => fetchLiveFeed(false));
-    $('#live-scope-select')?.addEventListener('change', () => fetchLiveFeed(false));
-    $('#live-filter-tenant')?.addEventListener('change', () => fetchLiveFeed(false));
-    $('#live-filter-status')?.addEventListener('change', () => fetchLiveFeed(false));
-    $('#live-search')?.addEventListener('input', () => fetchLiveFeed(true));
-    $('#live-auto-refresh')?.addEventListener('change', startLiveRefreshIfActive);
+    $('#btn-live-clear')?.addEventListener('click', () => {
+      stopLiveRefresh();
+      triageState.liveFetchSeq++;
+      triageState.liveAutoRefresh = false;
+      if ($('#live-auto-refresh')) $('#live-auto-refresh').checked = false;
+      try { localStorage.setItem(LIVE_AUTO_REFRESH_KEY, '0'); } catch {}
+      triageState.liveData = null;
+      renderLiveFeed();
+      B.toast({ type: 'info', title: 'Tampilan Live Wazuh dikosongkan' });
+    });
+    $('#live-scope-select')?.addEventListener('change', () => {
+      if (triageState.liveData !== null || $('#live-auto-refresh')?.checked) {
+        fetchLiveFeed(false);
+      }
+    });
+    $('#live-filter-tenant')?.addEventListener('change', () => renderLiveFeed());
+    $('#live-filter-status')?.addEventListener('change', () => renderLiveFeed());
+    $('#live-search')?.addEventListener('input', () => renderLiveFeed());
+    $('#live-auto-refresh')?.addEventListener('change', (e) => {
+      const enabled = Boolean(e.target.checked);
+      triageState.liveAutoRefresh = enabled;
+      try { localStorage.setItem(LIVE_AUTO_REFRESH_KEY, enabled ? '1' : '0'); } catch {}
+      if (!enabled) {
+        stopLiveRefresh();
+        triageState.liveFetchSeq++;
+      } else {
+        fetchLiveFeed(true);
+        startLiveRefreshIfActive();
+      }
+    });
 
     // Case Audit History Controls
     $('#btn-trghist-refresh')?.addEventListener('click', () => fetchTriageHistory(false));
@@ -1194,8 +1268,11 @@
     if (view === 'triage') {
       fetchTriageQueue(false);
     } else if (view === 'live-feed') {
-      fetchLiveFeed(false);
-      startLiveRefreshIfActive();
+      renderLiveFeed();
+      if ($('#live-auto-refresh')?.checked) {
+        fetchLiveFeed(false);
+        startLiveRefreshIfActive();
+      }
     } else if (view === 'triage-history') {
       fetchTriageHistory(false);
     } else if (view === 'settings' && triageState.settingsTab === 'triage') {

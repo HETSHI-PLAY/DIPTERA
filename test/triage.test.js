@@ -654,7 +654,29 @@ async function main() {
     const histAfterPurge = await httpJson(`${baseUrl}/api/triage/history`);
     assert.equal(histAfterPurge.json.items.length, 0);
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (11/11)');
+    // 12. In-flight poll aborted cleanly when purge or pause occurs
+    const slowPollPromise = httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: {
+        action: 'poll_now',
+        range: 'custom',
+        from: '2029-11-26T10:01:00.000Z',
+        to: '2029-11-26T10:01:20.000Z',
+        size: 50,
+      },
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    const abortPurge = await httpJson(`${baseUrl}/api/triage/purge`, {
+      method: 'POST',
+      body: { clearState: true, includeHistory: false },
+    });
+    assert.equal(abortPurge.status, 200);
+    const slowPollRes = await slowPollPromise;
+    assert.equal(slowPollRes.status, 200);
+    const afterAbortQueue = await httpJson(`${baseUrl}/api/triage/queue`);
+    assert.equal(afterAbortQueue.json.groups.length, 0, 'Aborted in-flight poll must not write back to purged queue');
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (12/12)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

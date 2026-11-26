@@ -3832,7 +3832,44 @@
     });
     $('#hist-filter-tenant').addEventListener('change', fetchHistory);
     $('#hist-filter-mode').addEventListener('change', fetchHistory);
+    const wireDoubleConfirm = (btnEl, confirmLabel, onConfirm) => {
+      if (!btnEl) return;
+      const defaultLabel = btnEl.textContent;
+      let timer = null;
+      btnEl.addEventListener('click', async () => {
+        if (btnEl.dataset.armed !== '1') {
+          btnEl.dataset.armed = '1';
+          btnEl.textContent = confirmLabel;
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            btnEl.dataset.armed = '0';
+            btnEl.textContent = defaultLabel;
+          }, 5000);
+          return;
+        }
+        clearTimeout(timer);
+        btnEl.dataset.armed = '0';
+        btnEl.textContent = defaultLabel;
+        await onConfirm();
+      });
+    };
+
     $('#btn-hist-refresh').addEventListener('click', fetchHistory);
+    wireDoubleConfirm($('#btn-hist-clear'), 'Klik lagi untuk Kosongkan Riwayat', async () => {
+      try {
+        const ws = state.historyWorkspace || 'all';
+        const res = await apiFetch('/api/history?workspace=' + encodeURIComponent(ws), { method: 'DELETE' });
+        await fetchHistory();
+        fetchSharedState(true);
+        toast({
+          type: 'info',
+          title: 'Riwayat dikosongkan',
+          body: `${res.deletedCount || 0} entri riwayat (${String(ws).toUpperCase()}) dihapus.`,
+        });
+      } catch (e) {
+        toast({ type: 'error', title: 'Gagal mengosongkan riwayat', body: e.message });
+      }
+    });
 
     document.querySelectorAll('.appr-status-btn[data-appr-status]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -3856,6 +3893,23 @@
       fetchApprovals(false);
     });
     $('#btn-appr-refresh').addEventListener('click', () => fetchApprovals(false));
+    wireDoubleConfirm($('#btn-appr-clear'), 'Klik lagi untuk Kosongkan Approval', async () => {
+      try {
+        const ws = state.approvalWorkspaceFilter || 'all';
+        const st = state.approvalStatusFilter || 'all';
+        const qs = new URLSearchParams({ workspace: ws, status: st });
+        const res = await apiFetch('/api/approvals?' + qs.toString(), { method: 'DELETE' });
+        await fetchApprovals(true, { notifyNew: false });
+        fetchSharedState(true);
+        toast({
+          type: 'info',
+          title: 'Approval dikosongkan',
+          body: `${res.deletedCount || 0} item approval dihapus.`,
+        });
+      } catch (e) {
+        toast({ type: 'error', title: 'Gagal mengosongkan approval', body: e.message });
+      }
+    });
     $('#btn-copy-appr-url').addEventListener('click', () => copyText(approvalEndpointUrl(), 'Endpoint Approval'));
     $('#appr-analyst-name').addEventListener('input', (e) => {
       state.analystName = e.target.value;
