@@ -529,6 +529,186 @@
     }
   }
 
+  /* ---------------- Settings Panel & Daftar Exclusion Rules ---------------- */
+
+  function syncExclusionBadge(count) {
+    const badge = $('#tab-triage-exclusions-count');
+    if (badge && typeof count === 'number') badge.textContent = String(count);
+  }
+
+  function renderExclusionsPage() {
+    const tbody = $('#exclusions-page-tbody');
+    const emptyEl = $('#exclusions-page-empty');
+    const pillEl = $('#ex-summary-pill');
+    if (!tbody || !emptyEl) return;
+
+    const allRules = triageState.exclusions || triageState.config?.exclusionRules || [];
+    const enabledCount = allRules.filter((r) => r.enabled !== false).length;
+    syncExclusionBadge(allRules.length);
+    if (pillEl) pillEl.textContent = `${enabledCount} Aktif / ${allRules.length} Total Rule`;
+
+    const modeFilter = $('#ex-filter-mode')?.value || triageState.exFilterMode || 'all';
+    const q = ($('#ex-search')?.value || triageState.exSearch || '').trim().toLowerCase();
+
+    const filtered = allRules.filter((r) => {
+      if (modeFilter === 'enabled' && r.enabled === false) return false;
+      if (modeFilter === 'disabled' && r.enabled !== false) return false;
+      if (modeFilter === 'auto_ignore' && r.source !== 'auto_ignore') return false;
+      if (modeFilter === 'manual' && r.source === 'auto_ignore') return false;
+      if (q) {
+        const hay = `${r.target} ${r.mode} ${r.pattern} ${r.note || ''} ${r.source || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    tbody.innerHTML = '';
+    if (!filtered.length) {
+      emptyEl.hidden = false;
+      return;
+    }
+    emptyEl.hidden = true;
+
+    for (const rule of filtered) {
+      const tr = document.createElement('tr');
+      const isEditing = triageState.exEditingId === rule.id;
+      const sourceBadge = rule.source === 'auto_ignore'
+        ? '<span class="chip verdict-review">Auto-Exclude</span>'
+        : rule.source === 'default'
+          ? '<span class="chip">Default</span>'
+          : '<span class="chip mode-reporting">Manual</span>';
+
+      if (isEditing) {
+        tr.innerHTML = `
+          <td><input type="checkbox" class="ex-edit-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Aktifkan aturan" /></td>
+          <td>
+            <select class="ex-edit-target">
+              <option value="path" ${rule.target === 'path' ? 'selected' : ''}>path</option>
+              <option value="full_log" ${rule.target === 'full_log' ? 'selected' : ''}>full_log</option>
+            </select>
+          </td>
+          <td>
+            <select class="ex-edit-mode">
+              <option value="contains" ${rule.mode === 'contains' ? 'selected' : ''}>contains</option>
+              <option value="starts_with" ${rule.mode === 'starts_with' ? 'selected' : ''}>starts_with</option>
+              <option value="regex" ${rule.mode === 'regex' ? 'selected' : ''}>regex</option>
+            </select>
+          </td>
+          <td><input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" spellcheck="false" /></td>
+          <td><input type="text" class="ex-edit-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
+          <td>
+            <div class="wzh-row-btn-group">
+              <button type="button" class="btn primary btn-xs act-ex-save-edit">Simpan</button>
+              <button type="button" class="btn ghost btn-xs act-ex-cancel-edit">Batal</button>
+            </div>
+          </td>
+        `;
+        $('.act-ex-save-edit', tr)?.addEventListener('click', async () => {
+          const pattern = ($('.ex-edit-pattern', tr)?.value || '').trim();
+          if (!pattern) {
+            B.toast({ type: 'error', title: 'Pola tidak boleh kosong' });
+            return;
+          }
+          try {
+            const res = await B.apiFetch('/api/triage/exclusions/' + encodeURIComponent(rule.id), {
+              method: 'PATCH',
+              body: JSON.stringify({
+                enabled: Boolean($('.ex-edit-enabled', tr)?.checked),
+                target: $('.ex-edit-target', tr)?.value,
+                mode: $('.ex-edit-mode', tr)?.value,
+                pattern,
+                note: ($('.ex-edit-note', tr)?.value || '').trim(),
+              }),
+            });
+            triageState.exEditingId = null;
+            if (res.rules) {
+              triageState.exclusions = res.rules;
+              if (triageState.config) triageState.config.exclusionRules = res.rules;
+              renderExclusionRows(res.rules);
+            }
+            renderExclusionsPage();
+            B.toast({ type: 'success', title: 'Rule exclude diperbarui' });
+          } catch (err) {
+            B.toast({ type: 'error', title: 'Gagal memperbarui rule', body: err.message });
+          }
+        });
+        $('.act-ex-cancel-edit', tr)?.addEventListener('click', () => {
+          triageState.exEditingId = null;
+          renderExclusionsPage();
+        });
+      } else {
+        tr.innerHTML = `
+          <td><input type="checkbox" class="act-ex-toggle" ${rule.enabled !== false ? 'checked' : ''} aria-label="Toggle rule ${B.esc(rule.pattern)}" /></td>
+          <td><span class="chip">${B.esc(rule.target === 'full_log' ? 'Full Log' : 'URL Path')}</span></td>
+          <td><span class="mono">${B.esc(rule.mode)}</span></td>
+          <td class="mono">${B.esc(rule.pattern)}</td>
+          <td>
+            <div class="wzh-ex-note-cell">
+              ${sourceBadge}
+              <span>${B.esc(rule.note || '—')}</span>
+            </div>
+          </td>
+          <td>
+            <div class="wzh-row-btn-group">
+              <button type="button" class="btn ghost btn-xs act-ex-edit">Edit</button>
+              <button type="button" class="btn danger btn-xs act-ex-del">Hapus</button>
+            </div>
+          </td>
+        `;
+        $('.act-ex-toggle', tr)?.addEventListener('change', async (e) => {
+          try {
+            const res = await B.apiFetch('/api/triage/exclusions/' + encodeURIComponent(rule.id), {
+              method: 'PATCH',
+              body: JSON.stringify({ enabled: Boolean(e.target.checked) }),
+            });
+            if (res.rules) {
+              triageState.exclusions = res.rules;
+              if (triageState.config) triageState.config.exclusionRules = res.rules;
+              renderExclusionRows(res.rules);
+            }
+            renderExclusionsPage();
+          } catch (err) {
+            e.target.checked = !e.target.checked;
+            B.toast({ type: 'error', title: 'Gagal mengubah status rule', body: err.message });
+          }
+        });
+        $('.act-ex-edit', tr)?.addEventListener('click', () => {
+          triageState.exEditingId = rule.id;
+          renderExclusionsPage();
+        });
+        $('.act-ex-del', tr)?.addEventListener('click', async () => {
+          try {
+            const res = await B.apiFetch('/api/triage/exclusions/' + encodeURIComponent(rule.id), { method: 'DELETE' });
+            if (res.rules) {
+              triageState.exclusions = res.rules;
+              if (triageState.config) triageState.config.exclusionRules = res.rules;
+              renderExclusionRows(res.rules);
+            }
+            renderExclusionsPage();
+            B.toast({ type: 'info', title: 'Rule exclude dihapus' });
+          } catch (err) {
+            B.toast({ type: 'error', title: 'Gagal menghapus rule', body: err.message });
+          }
+        });
+      }
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function fetchExclusionRules(silent = false) {
+    try {
+      const res = await B.apiFetch('/api/triage/exclusions');
+      if (Array.isArray(res?.rules)) {
+        triageState.exclusions = res.rules;
+        if (triageState.config) triageState.config.exclusionRules = res.rules;
+        renderExclusionRows(res.rules);
+        renderExclusionsPage();
+      }
+    } catch (err) {
+      if (!silent) B.toast({ type: 'error', title: 'Gagal memuat daftar exclude', body: err.message });
+    }
+  }
+
   function switchSettingsSubTab(tab) {
     const isTriage = tab === 'triage';
     triageState.settingsTab = isTriage ? 'triage' : 'workspace';
