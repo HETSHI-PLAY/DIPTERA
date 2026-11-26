@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126e" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126e" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126e" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126g" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126g" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126g" />
 </head>
 
 <body>
@@ -133,6 +133,10 @@
             <span>AI Triage</span>
             <span class="tab-count" id="tab-triage-count">0</span>
           </button>
+          <button class="sidebar-item" id="tab-triage-24h" type="button" role="tab" aria-selected="false" aria-controls="view-triage-24h">
+            <span>Tarik 24 Jam</span>
+            <span class="tab-count" id="tab-triage-24h-count">0</span>
+          </button>
           <button class="sidebar-item" id="tab-live-feed" type="button" role="tab" aria-selected="false" aria-controls="view-live-feed">
             <span>Live Wazuh</span>
             <span class="tab-count" id="tab-live-count">0</span>
@@ -140,6 +144,10 @@
           <button class="sidebar-item" id="tab-triage-history" type="button" role="tab" aria-selected="false" aria-controls="view-triage-history">
             <span>Audit Triage</span>
             <span class="tab-count" id="tab-triage-history-count">0</span>
+          </button>
+          <button class="sidebar-item" id="tab-triage-exclusions" type="button" role="tab" aria-selected="false" aria-controls="view-triage-exclusions">
+            <span>Daftar Exclude</span>
+            <span class="tab-count" id="tab-triage-exclusions-count">0</span>
           </button>
         </div>
       </div>
@@ -720,7 +728,6 @@
               <option value="15m">15 Menit Terakhir</option>
               <option value="1h" selected>1 Jam Terakhir</option>
               <option value="6h">6 Jam Terakhir</option>
-              <option value="24h">24 Jam Terakhir</option>
               <option value="watermark">Sejak Watermark</option>
               <option value="custom">Rentang Kustom…</option>
             </select>
@@ -729,6 +736,15 @@
             <button type="button" class="btn ghost btn-sm" id="btn-triage-dismiss-fp">Hapus Semua False Positive</button>
             <button type="button" class="btn ghost btn-sm" id="btn-triage-reset">Reset Watermark</button>
             <button type="button" class="btn danger btn-sm" id="btn-triage-purge">Hapus Database Triage</button>
+          </div>
+
+          <div id="trg-poll-progress" class="triage-progress-box" hidden>
+            <div class="triage-progress-head">
+              <strong id="trg-poll-progress-msg">Menarik dan menganalisis alert…</strong>
+            </div>
+            <div class="triage-progress-track" role="progressbar" aria-label="Proses penarikan AI Triage">
+              <div class="triage-progress-fill is-indeterminate"></div>
+            </div>
           </div>
 
           <div id="trg-custom-range-bar" class="triage-custom-range-bar" hidden>
@@ -789,22 +805,131 @@
           </div>
         </section>
 
+        <!-- VIEW 5B: Penarikan Batch 24 Jam Terakhir (Terisolasi dari AI Triage) -->
+        <section id="view-triage-24h" class="triage-view" role="tabpanel" aria-labelledby="tab-triage-24h" hidden>
+          <div class="triage-status-bar">
+            <span class="sync-pill offline" id="b24-status-pill">Siap</span>
+            <select id="b24-range" class="triage-range-select" aria-label="Rentang waktu tarik batch">
+              <option value="24h" selected>24 Jam Terakhir</option>
+              <option value="12h">12 Jam Terakhir</option>
+              <option value="6h">6 Jam Terakhir</option>
+              <option value="7d">7 Hari Terakhir</option>
+              <option value="custom">Rentang Kustom…</option>
+            </select>
+            <input type="text" id="b24-target-tenant" class="triage-inline-input" placeholder="Semua tenant (opsional)" aria-label="Filter tenant sebelum tarik 24 jam" spellcheck="false" />
+            <input type="number" id="b24-size" class="trg-num-sm" min="10" max="1000" value="500" title="Maks alert ditarik (10-1000)" aria-label="Maks alert ditarik" />
+            <span class="spacer"></span>
+            <button type="button" class="btn accent btn-sm" id="btn-b24-run">Mulai Tarik 24 Jam</button>
+            <button type="button" class="btn danger btn-sm" id="btn-b24-cancel" hidden>Batalkan</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-b24-dismiss-fp">Hapus False Positive</button>
+            <button type="button" class="btn danger btn-sm" id="btn-b24-clear">Kosongkan 24 Jam</button>
+          </div>
+
+          <div id="b24-custom-range-bar" class="triage-custom-range-bar" hidden>
+            <label class="triage-range-field">
+              <span class="field-label">Dari (WIB / Lokal)</span>
+              <input type="datetime-local" id="b24-from" />
+            </label>
+            <label class="triage-range-field">
+              <span class="field-label">Sampai (WIB / Lokal)</span>
+              <input type="datetime-local" id="b24-to" />
+            </label>
+          </div>
+
+          <div id="b24-progress-box" class="triage-progress-box" hidden aria-live="polite">
+            <div class="triage-progress-head">
+              <strong id="b24-progress-msg">Menyiapkan penarikan 24 jam terakhir…</strong>
+              <span class="mono" id="b24-progress-pct">0%</span>
+            </div>
+            <div class="triage-progress-track" id="b24-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="triage-progress-fill" id="b24-progress-fill"></div>
+            </div>
+            <div class="triage-progress-meta" id="b24-progress-meta">Ditarik: 0 · Excluded: 0 · Batch AI: 0/0</div>
+          </div>
+
+          <div class="approval-toolbar">
+            <div class="appr-status-tabs" role="group" aria-label="Filter verdict batch 24 jam">
+              <button class="appr-status-btn b24-verdict-btn active" type="button" data-verdict="TRUE_POSITIVE" aria-pressed="true">
+                True Positive <span class="tab-count" id="b24-count-tp">0</span>
+              </button>
+              <button class="appr-status-btn b24-verdict-btn" type="button" data-verdict="NEEDS_REVIEW" aria-pressed="false">
+                Perlu Ditinjau <span class="tab-count" id="b24-count-review">0</span>
+              </button>
+              <button class="appr-status-btn b24-verdict-btn" type="button" data-verdict="FALSE_POSITIVE" aria-pressed="false">
+                False Positive <span class="tab-count" id="b24-count-fp">0</span>
+              </button>
+              <button class="appr-status-btn b24-verdict-btn" type="button" data-verdict="ALL" aria-pressed="false">
+                Semua <span class="tab-count" id="b24-count-all">0</span>
+              </button>
+            </div>
+
+            <div class="approval-filters">
+              <div class="search-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+                <input type="search" id="b24-search" placeholder="Cari judul insiden, IP, agent, Rule ID, atau Alert ID…" />
+              </div>
+              <select id="b24-filter-tenant" aria-label="Filter tenant batch 24 jam">
+                <option value="">Semua Tenant</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="b24-merge-bar" class="triage-merge-bar" hidden>
+            <span id="b24-merge-msg" class="field-msg"></span>
+            <button type="button" class="btn primary btn-sm" id="btn-b24-merge">Gabungkan ke 1 Grup</button>
+          </div>
+
+          <div id="b24-groups-list" class="approvals-list" aria-live="polite"></div>
+
+          <div id="b24-empty" class="empty" hidden>
+            <h2>Belum ada data di menu Tarik 24 Jam</h2>
+            <p>Pilih rentang waktu lalu tekan Mulai Tarik 24 Jam. Hasil penarikan di sini terpisah dari antrean AI Triage utama.</p>
+          </div>
+        </section>
+
         <!-- VIEW 6: Realtime Wazuh Feed (1:1 Parity) -->
         <section id="view-live-feed" class="live-feed-view" role="tabpanel" aria-labelledby="tab-live-feed" hidden>
           <div class="triage-status-bar">
             <span class="sync-pill" id="live-parity-pill">Belum dimuat</span>
-            <select id="live-scope-select" aria-label="Rentang waktu Live Feed">
+            <select id="live-scope-select" class="triage-range-select" aria-label="Rentang waktu Live Feed">
               <option value="watermark">Sejak Watermark Triage</option>
-              <option value="24h">24 Jam Terakhir</option>
+              <option value="15m">15 Menit Terakhir</option>
+              <option value="1h">1 Jam Terakhir</option>
+              <option value="6h">6 Jam Terakhir</option>
+              <option value="24h">1 Hari Terakhir</option>
+              <option value="7d">1 Minggu Terakhir</option>
+              <option value="custom">Rentang Kustom…</option>
             </select>
             <label class="check">
               <input type="checkbox" id="live-auto-refresh" />
               <span>Auto-refresh</span>
             </label>
             <span class="spacer"></span>
+            <button type="button" class="btn ghost btn-sm" id="btn-live-fields">Kolom Field</button>
             <button type="button" class="btn ghost btn-sm" id="btn-live-refresh">Segarkan Live</button>
             <button type="button" class="btn danger btn-sm" id="btn-live-clear">Kosongkan</button>
           </div>
+
+          <div id="live-custom-range-bar" class="triage-custom-range-bar" hidden>
+            <label class="triage-range-field">
+              <span class="field-label">Dari (WIB / Lokal)</span>
+              <input type="datetime-local" id="live-from" />
+            </label>
+            <label class="triage-range-field">
+              <span class="field-label">Sampai (WIB / Lokal)</span>
+              <input type="datetime-local" id="live-to" />
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Maks Alert</span>
+              <input type="number" id="live-size" min="10" max="1000" value="500" />
+            </label>
+            <button type="button" class="btn accent btn-sm" id="btn-live-apply-custom">Tarik Rentang Ini</button>
+          </div>
+
+          <div id="live-fields-panel" class="wzh-field-picker" hidden></div>
 
           <div class="history-toolbar">
             <div class="search-box">
@@ -812,7 +937,7 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="live-search" placeholder="Cari Alert ID, Rule ID, path, IP sumber, atau full_log…" />
+              <input type="search" id="live-search" placeholder="Cari Rule ID, deskripsi, path, IP sumber, atau full_log…" />
             </div>
             <select id="live-filter-tenant" aria-label="Filter tenant live feed">
               <option value="">Semua Tenant</option>
@@ -829,29 +954,16 @@
             </select>
           </div>
 
-          <div class="history-table-wrap">
-            <table class="history-table">
-              <thead>
-                <tr>
-                  <th>Waktu (WIB)</th>
-                  <th>Wazuh Alert ID</th>
-                  <th>Tenant</th>
-                  <th>Agent</th>
-                  <th>Rule</th>
-                  <th>Deskripsi &amp; Path</th>
-                  <th>Severity</th>
-                  <th>Source IP</th>
-                  <th>Status Diptera</th>
-                  <th class="col-actions">Aksi</th>
-                </tr>
-              </thead>
+          <div class="wzh-discover-wrap">
+            <table class="wzh-discover-table" id="live-discover-table">
+              <thead id="live-feed-thead"></thead>
               <tbody id="live-feed-tbody"></tbody>
             </table>
           </div>
 
           <div id="live-feed-empty" class="empty" hidden>
             <h2>Tidak ada event dari Wazuh Indexer</h2>
-            <p>Pastikan koneksi Wazuh Indexer terkonfigurasi atau ubah rentang waktu ke 24 Jam Terakhir.</p>
+            <p>Pastikan koneksi Wazuh Indexer terkonfigurasi atau ubah rentang waktu lalu tekan Segarkan Live.</p>
           </div>
         </section>
 
@@ -877,6 +989,141 @@
           <div id="triage-history-empty" class="empty" hidden>
             <h2>Belum ada riwayat case dari AI Triage</h2>
             <p>Setiap case yang dibuat lewat Buat Case atau Kirim ke Form akan mencatat daftar Wazuh Alert ID di sini.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 8: Daftar Exclusion Rules (Manual & Auto-Exclude) -->
+        <section id="view-triage-exclusions" class="triage-view" role="tabpanel" aria-labelledby="tab-triage-exclusions" hidden>
+          <div class="triage-status-bar">
+            <span class="sync-pill" id="ex-summary-pill">0 Aturan Exclude</span>
+            <span class="field-hint">Aturan aktif otomatis menyaring alert sebelum dikirim ke AI Ollama.</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn accent btn-sm" id="btn-ex-new-toggle">+ Tambah Rule Exclude</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-ex-refresh">Segarkan</button>
+          </div>
+
+          <div id="ex-add-form" class="triage-custom-range-bar" hidden>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Target</span>
+              <select id="ex-new-target">
+                <option value="path">URL / Request Path</option>
+                <option value="full_log">Full Log</option>
+              </select>
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Mode</span>
+              <select id="ex-new-mode">
+                <option value="contains">Contains</option>
+                <option value="starts_with">Starts With</option>
+                <option value="regex">Regex</option>
+              </select>
+            </label>
+            <label class="triage-range-field">
+              <span class="field-label">Pola</span>
+              <input type="text" id="ex-new-pattern" placeholder="/cdn-cgi/rum atau kata kunci log" spellcheck="false" />
+            </label>
+            <label class="triage-range-field">
+              <span class="field-label">Keterangan (opsional)</span>
+              <input type="text" id="ex-new-note" placeholder="Alasan pengecualian" />
+            </label>
+            <button type="button" class="btn primary btn-sm" id="btn-ex-save-new">Simpan Rule</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-ex-cancel-new">Batal</button>
+          </div>
+
+          <div class="history-toolbar">
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input type="search" id="ex-search" placeholder="Cari pola atau keterangan rule exclude…" />
+            </div>
+            <select id="ex-filter-mode" aria-label="Filter daftar exclude">
+              <option value="all">Semua Rule</option>
+              <option value="enabled">Aktif Saja</option>
+              <option value="disabled">Nonaktif Saja</option>
+              <option value="auto_ignore">Auto-Exclude (Abaikan)</option>
+              <option value="manual">Manual / Default</option>
+            </select>
+          </div>
+
+          <div class="wzh-discover-wrap">
+            <table class="wzh-discover-table wzh-ex-table">
+              <colgroup>
+                <col style="width: 64px" />
+                <col style="width: 112px" />
+                <col style="width: 108px" />
+                <col style="width: 30%" />
+                <col style="width: 30%" />
+                <col style="width: 136px" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Aktif</th>
+                  <th>Target</th>
+                  <th>Mode</th>
+                  <th>Pola</th>
+                  <th>Sumber &amp; Keterangan</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="exclusions-page-tbody"></tbody>
+            </table>
+          </div>
+
+          <div id="exclusions-page-empty" class="empty" hidden>
+            <h2>Belum ada rule exclude</h2>
+            <p>Gunakan tombol "Abaikan + Exclude" pada kartu AI Triage atau tambahkan aturan baru di atas.</p>
+          </div>
+        </section>
+
+        <!-- VIEW 9: Inspector Alert 1-per-1 (Gaya Wazuh Discover) -->
+        <section id="view-triage-inspector" class="triage-view" hidden>
+          <div class="triage-status-bar wzh-inspector-bar">
+            <button type="button" class="btn ghost btn-sm" id="btn-insp-back">← Kembali</button>
+            <div class="wzh-inspector-meta">
+              <strong id="insp-title">Detail Alert</strong>
+              <div class="triage-card-badges" id="insp-badges"></div>
+            </div>
+            <span class="spacer"></span>
+            <button type="button" class="btn ghost btn-sm" id="btn-insp-fields">Kolom Field</button>
+            <button type="button" class="btn accent btn-sm" id="btn-insp-group-promote">Buat Case Grup</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-insp-group-ignore">Abaikan + Exclude Grup</button>
+            <button type="button" class="btn danger btn-sm" id="btn-insp-group-dismiss">Hapus Grup</button>
+          </div>
+
+          <div id="insp-fields-panel" class="wzh-field-picker" hidden></div>
+
+          <div class="triage-sublist-toolbar">
+            <label class="triage-sublist-info">
+              <input type="checkbox" class="triage-subalert-check" id="insp-select-all" />
+              <span id="insp-sel-count">0 alert</span>
+            </label>
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+              <input type="search" id="insp-search" placeholder="Filter di dalam alert grup ini…" />
+            </div>
+            <div class="triage-sublist-actions" id="insp-bulk-actions">
+              <button type="button" class="btn ghost btn-xs" id="btn-insp-split" disabled>Pisah Grup Baru</button>
+              <button type="button" class="btn ghost btn-xs" id="btn-insp-ignore-sel" disabled>Abaikan + Exclude</button>
+              <button type="button" class="btn danger btn-xs" id="btn-insp-remove-sel" disabled>Hapus Terpilih</button>
+              <button type="button" class="btn accent btn-xs" id="btn-insp-promote-sel" disabled>Buat Case Terpilih</button>
+            </div>
+          </div>
+
+          <div class="wzh-discover-wrap">
+            <table class="wzh-discover-table" id="insp-discover-table">
+              <thead id="insp-thead"></thead>
+              <tbody id="insp-tbody"></tbody>
+            </table>
+          </div>
+
+          <div id="insp-empty" class="empty" hidden>
+            <h2>Tidak ada alert untuk ditampilkan</h2>
+            <p>Semua alert telah diproses atau tidak cocok dengan kata kunci filter.</p>
           </div>
         </section>
       </div>
@@ -1015,11 +1262,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126e"></script>
-  <script src="/js/numbering.js?v=20261126e"></script>
-  <script src="/js/extract.js?v=20261126e"></script>
-  <script src="/js/app.js?v=20261126e"></script>
-  <script src="/js/triage-ui.js?v=20261126e"></script>
+  <script src="/config.js?v=20261126g"></script>
+  <script src="/js/numbering.js?v=20261126g"></script>
+  <script src="/js/extract.js?v=20261126g"></script>
+  <script src="/js/app.js?v=20261126g"></script>
+  <script src="/js/triage-ui.js?v=20261126g"></script>
 </body>
 
 </html>

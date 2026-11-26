@@ -2788,13 +2788,37 @@ function createServer(options = {}) {
         }
         if (method === 'GET' && pathname === '/api/triage/live') {
           const live = await triage.getLiveFeed({
+            range: urlObj.searchParams.get('range') || '',
             scope: urlObj.searchParams.get('scope') || 'watermark',
+            from: urlObj.searchParams.get('from') || '',
+            to: urlObj.searchParams.get('to') || '',
             size: urlObj.searchParams.get('size') || 500,
             tenant: urlObj.searchParams.get('tenant') || '',
             status: urlObj.searchParams.get('status') || '',
             q: urlObj.searchParams.get('q') || '',
           });
           return sendJson(res, method, 200, live);
+        }
+        if (method === 'GET' && pathname === '/api/triage/exclusions') {
+          return sendJson(res, method, 200, triage.listExclusionRules());
+        }
+        if (method === 'POST' && pathname === '/api/triage/exclusions') {
+          const body = await readJsonBody(req);
+          const result = triage.addExclusionRule(body || {});
+          return sendJson(res, method, result.alreadyExisted ? 200 : 201, result);
+        }
+        if (pathname.startsWith('/api/triage/exclusions/')) {
+          const ruleId = decodeURIComponent(pathname.slice('/api/triage/exclusions/'.length));
+          if (!ruleId || ruleId.includes('/')) {
+            return sendJson(res, method, 400, { error: 'ID rule exclude tidak valid' });
+          }
+          if (method === 'PATCH') {
+            const body = await readJsonBody(req);
+            return sendJson(res, method, 200, triage.updateExclusionRule(ruleId, body || {}));
+          }
+          if (method === 'DELETE') {
+            return sendJson(res, method, 200, triage.deleteExclusionRule(ruleId));
+          }
         }
         if (method === 'GET' && pathname === '/api/triage/stream') {
           triage.subscribeSse(res);
@@ -2823,6 +2847,11 @@ function createServer(options = {}) {
           });
           return sendJson(res, method, 200, result);
         }
+        if (method === 'POST' && pathname === '/api/triage/ignore-exclude') {
+          const body = await readJsonBody(req);
+          const result = triage.ignoreAndExcludeGroups(body || {});
+          return sendJson(res, method, 200, result);
+        }
         if (method === 'POST' && pathname === '/api/triage/reset') {
           const body = await readJsonBody(req);
           const result = triage.resetQueue(body?.watermarkTimestamp);
@@ -2840,6 +2869,60 @@ function createServer(options = {}) {
         if (method === 'POST' && pathname === '/api/triage/promote') {
           const body = await readJsonBody(req, 12 * 1024 * 1024);
           const result = triage.promoteToCase(body, reqUser);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'GET' && pathname === '/api/triage/batch24h') {
+          const snap = triage.getBatch24hSnapshot({
+            verdict: urlObj.searchParams.get('verdict') || '',
+            tenant: urlObj.searchParams.get('tenant') || '',
+            q: urlObj.searchParams.get('q') || '',
+          });
+          return sendJson(res, method, 200, snap);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/run') {
+          const body = await readJsonBody(req);
+          const result = triage.startBatch24hPull(body || {});
+          return sendJson(res, method, 202, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/cancel') {
+          const result = triage.cancelBatch24hPull();
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/clear') {
+          const result = triage.clearBatch24h();
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/merge') {
+          const body = await readJsonBody(req);
+          const result = triage.mergeBatch24hGroups(body?.groupIds || []);
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/split') {
+          const body = await readJsonBody(req);
+          const result = triage.splitBatch24hAlerts(body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/remove-alerts') {
+          const body = await readJsonBody(req);
+          const result = triage.removeBatch24hAlerts(body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/dismiss') {
+          const body = await readJsonBody(req);
+          const result = triage.dismissBatch24hGroups({
+            groupIds: body?.groupIds || (body?.groupId ? [body.groupId] : []),
+            verdict: body?.verdict || '',
+          });
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/ignore-exclude') {
+          const body = await readJsonBody(req);
+          const result = triage.ignoreAndExcludeBatch24h(body || {});
+          return sendJson(res, method, 200, result);
+        }
+        if (method === 'POST' && pathname === '/api/triage/batch24h/promote') {
+          const body = await readJsonBody(req, 12 * 1024 * 1024);
+          const result = triage.promoteBatch24hToCase(body || {}, reqUser);
           return sendJson(res, method, 200, result);
         }
         if (method === 'GET' && pathname === '/api/triage/history') {

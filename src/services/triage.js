@@ -54,13 +54,13 @@ const DEFAULT_SYSTEM_PROMPT = [
 ].join('\n');
 
 const DEFAULT_EXCLUSION_RULES = [
-  { id: 'ex-path-login', target: 'path', mode: 'contains', pattern: '/login.php', enabled: true, note: 'Login page aplikasi' },
-  { id: 'ex-path-mhs', target: 'path', mode: 'contains', pattern: '/mhs/nim', enabled: true, note: 'Endpoint akademik kampus' },
-  { id: 'ex-path-favicon', target: 'path', mode: 'contains', pattern: '/favicon.ico', enabled: true, note: 'Favicon browser' },
-  { id: 'ex-path-assets', target: 'path', mode: 'starts_with', pattern: '/assets/', enabled: true, note: 'Static assets' },
-  { id: 'ex-log-healthcheck', target: 'full_log', mode: 'contains', pattern: 'HealthCheck', enabled: true, note: 'Health check internal' },
-  { id: 'ex-log-wordfence', target: 'full_log', mode: 'contains', pattern: 'Wordfence', enabled: true, note: 'Plugin security noise' },
-  { id: 'ex-log-loopback', target: 'full_log', mode: 'contains', pattern: '127.0.0.1', enabled: true, note: 'Loopback noise' },
+  { id: 'ex-path-login', target: 'path', mode: 'contains', pattern: '/login.php', enabled: true, source: 'default', note: 'Login page aplikasi' },
+  { id: 'ex-path-mhs', target: 'path', mode: 'contains', pattern: '/mhs/nim', enabled: true, source: 'default', note: 'Endpoint akademik kampus' },
+  { id: 'ex-path-favicon', target: 'path', mode: 'contains', pattern: '/favicon.ico', enabled: true, source: 'default', note: 'Favicon browser' },
+  { id: 'ex-path-assets', target: 'path', mode: 'starts_with', pattern: '/assets/', enabled: true, source: 'default', note: 'Static assets' },
+  { id: 'ex-log-healthcheck', target: 'full_log', mode: 'contains', pattern: 'HealthCheck', enabled: true, source: 'default', note: 'Health check internal' },
+  { id: 'ex-log-wordfence', target: 'full_log', mode: 'contains', pattern: 'Wordfence', enabled: true, source: 'default', note: 'Plugin security noise' },
+  { id: 'ex-log-loopback', target: 'full_log', mode: 'contains', pattern: '127.0.0.1', enabled: true, source: 'default', note: 'Loopback noise' },
 ];
 
 function cloneJson(v) {
@@ -217,13 +217,193 @@ function sanitizeExclusionRule(raw, idx = 0) {
   const mode = raw?.mode === 'starts_with' || raw?.mode === 'regex' ? raw.mode : 'contains';
   const pattern = String(raw?.pattern ?? '').trim();
   if (!pattern) return null;
+  const id = String(raw?.id || ('ex_' + idx + '_' + crypto.randomBytes(3).toString('hex')));
+  const rawSource = String(raw?.source || '').trim();
+  const inferredDefault = id.startsWith('ex-path-') || id.startsWith('ex-log-');
+  const source = rawSource === 'auto_ignore' || rawSource === 'default' || rawSource === 'manual'
+    ? rawSource
+    : (inferredDefault ? 'default' : 'manual');
   return {
-    id: String(raw?.id || ('ex_' + idx + '_' + crypto.randomBytes(3).toString('hex'))),
+    id,
     target,
     mode,
     pattern,
     enabled: raw?.enabled !== false,
+    source,
+    createdAt: raw?.createdAt || null,
     note: String(raw?.note ?? '').trim().slice(0, 120),
+  };
+}
+
+function longestCommonSubstring(strings = [], minLen = 12) {
+  if (!strings.length) return '';
+  if (strings.length === 1) return strings[0];
+  const base = strings.reduce((a, b) => (a.length <= b.length ? a : b));
+  for (let len = Math.min(base.length, 100); len >= minLen; len--) {
+    for (let start = 0; start <= base.length - len; start++) {
+      const sub = base.slice(start, start + len);
+      if (sub.trim().length < minLen) continue;
+      if (strings.every((s) => s.includes(sub))) return sub.trim();
+    }
+  }
+  return '';
+}
+
+function commonPathPrefix(paths = []) {
+  if (paths.length < 2) return '';
+  let prefix = paths[0];
+  for (let i = 1; i < paths.length; i++) {
+    while (prefix && !paths[i].startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+    if (!prefix) break;
+  }
+  const slashIdx = prefix.lastIndexOf('/');
+  const clean = slashIdx > 0 ? prefix.slice(0, slashIdx + 1) : '';
+  const segCount = clean.split('/').filter(Boolean).length;
+  return segCount >= 1 && clean.length >= 4 ? clean : '';
+}
+
+function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
+  const raws = (Array.isArray(alerts) ? alerts : [alerts])
+    .map((a) => (a && a.raw_wazuh_alert ? a.raw_wazuh_alert : a))
+    .filter((r) => r && typeof r === 'object');
+  const firstDesc = String(raws[0]?.rule?.description || '').trim();
+  const note = ('Auto-exclude: ' + String(fallbackTitle || firstDesc || 'Abaikan analis').trim()).slice(0, 120);
+  const nowIso = new Date().toISOString();
+
+  // Priority 1: Non-trivial URL/request path across alerts
+  const rawPaths = [];
+  const exactCounts = new Map();
+  const normCounts = new Map();
+  for (const r of raws) {
+    const p = extractPathCandidates(r)[0] || '';
+    const clean = p.split('?')[0].trim();
+    if (!clean || clean === '/' || clean.length < 2) continue;
+    rawPaths.push(clean);
+    exactCounts.set(clean, (exactCounts.get(clean) || 0) + 1);
+    const np = normalizePath(clean);
+    if (np && np !== '/') normCounts.set(np, (normCounts.get(np) || 0) + 1);
+  }
+
+  if (rawPaths.length > 0) {
+    const half = Math.max(1, Math.ceil(rawPaths.length * 0.5));
+    const topExact = [...exactCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topExact && topExact[1] >= half) {
+      return {
+        target: 'path',
+        mode: 'contains',
+        pattern: topExact[0].slice(0, 140),
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    }
+
+    const topNorm = [...normCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topNorm && topNorm[1] >= half) {
+      const np = topNorm[0];
+      const paramIdx = np.search(/\/:(?:id|uuid|hex)\b/);
+      if (paramIdx >= 3) {
+        return {
+          target: 'path',
+          mode: 'starts_with',
+          pattern: np.slice(0, paramIdx + 1),
+          enabled: true,
+          source: 'auto_ignore',
+          createdAt: nowIso,
+          note,
+        };
+      }
+      if (paramIdx >= 0) {
+        const regexBody = np
+          .split(/(\/:(?:uuid|hex|id))/)
+          .map((part) => (part === '/:uuid' || part === '/:hex' || part === '/:id'
+            ? '/[^/]+'
+            : part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')))
+          .join('');
+        return {
+          target: 'path',
+          mode: 'regex',
+          pattern: '^' + regexBody,
+          enabled: true,
+          source: 'auto_ignore',
+          createdAt: nowIso,
+          note,
+        };
+      }
+      return {
+        target: 'path',
+        mode: 'contains',
+        pattern: np,
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    }
+
+    const sharedPrefix = commonPathPrefix(rawPaths);
+    if (sharedPrefix) {
+      return {
+        target: 'path',
+        mode: 'starts_with',
+        pattern: sharedPrefix,
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    }
+  }
+
+  // Priority 2: Common full_log signature
+  const cleanLogs = raws
+    .map((r) => String(r.full_log || '')
+      .replace(/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+/, '')
+      .replace(/^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+/, '')
+      .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter((s) => s.length >= 6);
+
+  if (cleanLogs.length >= 2) {
+    const common = longestCommonSubstring(cleanLogs.slice(0, 5), 12);
+    if (common) {
+      return {
+        target: 'full_log',
+        mode: 'contains',
+        pattern: common.slice(0, 100),
+        enabled: true,
+        source: 'auto_ignore',
+        createdAt: nowIso,
+        note,
+      };
+    }
+  } else if (cleanLogs.length === 1) {
+    return {
+      target: 'full_log',
+      mode: 'contains',
+      pattern: cleanLogs[0].slice(0, 90),
+      enabled: true,
+      source: 'auto_ignore',
+      createdAt: nowIso,
+      note,
+    };
+  }
+
+  // Priority 3: Fallback rule.description or group title
+  const fallback = String(firstDesc || fallbackTitle || '').trim().slice(0, 100);
+  if (!fallback) return null;
+  return {
+    target: 'full_log',
+    mode: 'contains',
+    pattern: fallback,
+    enabled: true,
+    source: 'auto_ignore',
+    createdAt: nowIso,
+    note,
   };
 }
 
@@ -434,16 +614,59 @@ function createTriageEngine(options = {}) {
 
   const configPath = path.join(dataDir, 'server-config.json');
   const statePath = path.join(dataDir, 'triage-state.json');
+  const batch24hPath = path.join(dataDir, 'triage-24h.json');
   const historyPath = path.join(dataDir, 'case-history.json');
+
+  function defaultBatch24hState() {
+    return {
+      groups: [],
+      job: {
+        running: false,
+        phase: 'idle',
+        percent: 0,
+        message: 'Siap menarik alert 24 jam terakhir',
+        range: '24h',
+        sinceIso: null,
+        untilIso: null,
+        fetchedCount: 0,
+        excludedCount: 0,
+        totalCandidates: 0,
+        processedChunks: 0,
+        totalChunks: 0,
+        currentTenant: null,
+        startedAt: null,
+        finishedAt: null,
+        error: null,
+      },
+    };
+  }
+
+  function loadBatch24h() {
+    const def = defaultBatch24hState();
+    const raw = readJsonSafe(batch24hPath, null);
+    if (!raw || typeof raw !== 'object') return def;
+    const job = { ...def.job, ...(raw.job || {}) };
+    if (job.running) {
+      job.running = false;
+      job.phase = 'idle';
+      job.message = 'Job sebelumnya terhenti saat server restart.';
+    }
+    return {
+      groups: Array.isArray(raw.groups) ? raw.groups : [],
+      job,
+    };
+  }
 
   let config = loadConfig();
   let state = loadState();
+  let batch24h = loadBatch24h();
   let caseHistory = loadCaseHistory();
 
   let pollTimer = null;
   let pollLock = Promise.resolve();
   let ollamaLock = Promise.resolve();
   let pollEpoch = 0;
+  let batch24hEpoch = 0;
   let pollInFlight = false;
   const sseClients = new Set();
 
@@ -523,6 +746,11 @@ function createTriageEngine(options = {}) {
     writeJsonAtomic(historyPath, caseHistory);
   }
 
+  function saveBatch24h() {
+    batch24h.groups = (batch24h.groups || []).slice(0, MAX_ACTIVE_GROUPS);
+    writeJsonAtomic(batch24hPath, batch24h);
+  }
+
   function sanitizeConfigForClient(cfg = config) {
     const out = cloneJson(cfg);
     const hasPw = Boolean(out.wazuh?.password);
@@ -544,8 +772,8 @@ function createTriageEngine(options = {}) {
     return counts;
   }
 
-  function getQueueSnapshot(filters = {}) {
-    let items = state.groups.slice();
+  function filterAndSortGroups(groupsList = [], filters = {}) {
+    let items = groupsList.slice();
     const verdict = String(filters.verdict || '').trim().toUpperCase();
     const tenant = String(filters.tenant || '').trim().toLowerCase();
     const q = String(filters.q || '').trim().toLowerCase();
@@ -577,7 +805,11 @@ function createTriageEngine(options = {}) {
       if (vo !== 0) return vo;
       return Date.parse(b.last_seen || 0) - Date.parse(a.last_seen || 0);
     });
+    return items;
+  }
 
+  function getQueueSnapshot(filters = {}) {
+    const items = filterAndSortGroups(state.groups, filters);
     const tenantsSet = new Set(state.groups.map((g) => g.tenant_mapped).filter(Boolean));
 
     return {
@@ -589,6 +821,20 @@ function createTriageEngine(options = {}) {
       tenants: [...tenantsSet].sort(),
       groups: items,
       historyCount: caseHistory.length,
+      exclusionRulesCount: config.exclusionRules.length,
+      enabledExclusionRulesCount: config.exclusionRules.filter((r) => r.enabled !== false).length,
+    };
+  }
+
+  function getBatch24hSnapshot(filters = {}) {
+    const items = filterAndSortGroups(batch24h.groups, filters);
+    const tenantsSet = new Set(batch24h.groups.map((g) => g.tenant_mapped).filter(Boolean));
+    return {
+      ok: true,
+      job: { ...batch24h.job },
+      counts: summarizeCounts(batch24h.groups),
+      tenants: [...tenantsSet].sort(),
+      groups: items,
     };
   }
 
@@ -611,6 +857,7 @@ function createTriageEngine(options = {}) {
       connection: 'keep-alive',
     });
     res.write(`event: state\ndata: ${JSON.stringify(getQueueSnapshot())}\n\n`);
+    res.write(`event: batch24h\ndata: ${JSON.stringify(getBatch24hSnapshot())}\n\n`);
     sseClients.add(res);
     res.on('close', () => sseClients.delete(res));
   }
@@ -975,10 +1222,13 @@ function createTriageEngine(options = {}) {
     }
   }
 
-  function preGroupByTenant(hits) {
-    const processedSet = new Set(state.processedAlertIds);
-    const dismissedSet = new Set(state.dismissedAlertIds);
-    const createdSet = new Set(state.caseCreatedAlertIds);
+  function preGroupByTenant(hits, opts = {}) {
+    const skipSeen = opts.skipSeen !== false;
+    const mutateExclusions = opts.mutateExclusions !== false;
+    const tenantFilter = String(opts.tenantFilter || '').trim().toLowerCase();
+    const processedSet = skipSeen ? new Set(state.processedAlertIds) : null;
+    const dismissedSet = skipSeen ? new Set(state.dismissedAlertIds) : null;
+    const createdSet = skipSeen ? new Set(state.caseCreatedAlertIds) : null;
     const knownTenants = getKnownTenants();
 
     let excludedCount = 0;
@@ -986,20 +1236,26 @@ function createTriageEngine(options = {}) {
 
     for (const hit of hits) {
       const id = hit.alert_id;
-      if (processedSet.has(id) || dismissedSet.has(id) || createdSet.has(id) || state.excludedAlertMap[id]) {
+      if (skipSeen && (processedSet.has(id) || dismissedSet.has(id) || createdSet.has(id) || state.excludedAlertMap[id])) {
         continue;
       }
 
       const raw = hit.raw_wazuh_alert || {};
+      const tenant = resolveTenant(raw, config.wazuh.tenantMapping, knownTenants);
+      if (tenantFilter && tenant.toLowerCase() !== tenantFilter) {
+        continue;
+      }
+
       const ex = evaluateExclusions(raw, config.exclusionRules);
       if (ex.excluded) {
-        state.excludedAlertMap[id] = { ruleLabel: ex.ruleLabel, at: new Date().toISOString() };
-        state.processedAlertIds.push(id);
+        if (mutateExclusions) {
+          state.excludedAlertMap[id] = { ruleLabel: ex.ruleLabel, at: new Date().toISOString() };
+          state.processedAlertIds.push(id);
+        }
         excludedCount++;
         continue;
       }
 
-      const tenant = resolveTenant(raw, config.wazuh.tenantMapping, knownTenants);
       const ruleId = String(raw.rule?.id || 'unknown');
       const ruleLevel = Number(raw.rule?.level || 0);
       const ruleDesc = String(raw.rule?.description || 'Security Alert');
@@ -1066,30 +1322,42 @@ function createTriageEngine(options = {}) {
     return { excludedCount, byTenantBuckets };
   }
 
-  async function processHitsIntoQueue(hits, runEpoch = null) {
-    if (runEpoch != null && runEpoch !== pollEpoch) {
-      return { excludedCount: 0, analyzedCount: 0, aborted: true };
+  function appendSemanticGroupsToList(targetList, groupPayloads) {
+    for (const groupPayload of groupPayloads) {
+      const existing = targetList.find(
+        (g) =>
+          g.tenant_mapped === groupPayload.tenant_mapped &&
+          g.verdict === groupPayload.verdict &&
+          g.group_key === groupPayload.group_key
+      );
+      if (existing) {
+        mergeAlertWrappersIntoGroup(existing, groupPayload);
+      } else {
+        targetList.unshift(groupPayload);
+      }
     }
-    const { excludedCount, byTenantBuckets } = preGroupByTenant(hits);
+  }
+
+  async function runAiOnTenantBuckets(byTenantBuckets, hooks = {}) {
+    const isAborted = typeof hooks.isAborted === 'function' ? hooks.isAborted : () => false;
+    const getExistingGroupKeys = typeof hooks.getExistingGroupKeys === 'function' ? hooks.getExistingGroupKeys : () => [];
+    const onChunkProgress = typeof hooks.onChunkProgress === 'function' ? hooks.onChunkProgress : null;
+    const onTenantMerged = typeof hooks.onTenantMerged === 'function' ? hooks.onTenantMerged : null;
+
     let analyzedCount = 0;
+    let processedChunks = 0;
 
     for (const [tenant, bucketMap] of byTenantBuckets.entries()) {
-      if (runEpoch != null && runEpoch !== pollEpoch) {
-        return { excludedCount, analyzedCount, aborted: true };
-      }
+      if (isAborted()) return { analyzedCount, aborted: true };
       const candidates = [...bucketMap.values()];
       if (!candidates.length) continue;
 
-      const existingGroupKeys = [
-        ...new Set(state.groups.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key)),
-      ].slice(0, 20);
-
+      const existingGroupKeys = getExistingGroupKeys(tenant);
       const aiMap = new Map();
       const chunkErrors = new Map();
+
       for (let i = 0; i < candidates.length; i += OLLAMA_MICRO_BATCH_SIZE) {
-        if (runEpoch != null && runEpoch !== pollEpoch) {
-          return { excludedCount, analyzedCount, aborted: true };
-        }
+        if (isAborted()) return { analyzedCount, aborted: true };
         const chunk = candidates.slice(i, i + OLLAMA_MICRO_BATCH_SIZE);
         try {
           const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
@@ -1098,13 +1366,14 @@ function createTriageEngine(options = {}) {
           const msg = err.message || 'Ollama tidak terjangkau';
           for (const c of chunk) chunkErrors.set(c.candidateId, msg);
         }
+        processedChunks++;
+        if (onChunkProgress) onChunkProgress({ tenant, processedChunks });
       }
 
-      if (runEpoch != null && runEpoch !== pollEpoch) {
-        return { excludedCount, analyzedCount, aborted: true };
-      }
+      if (isAborted()) return { analyzedCount, aborted: true };
 
       const mergedInTenant = new Map();
+      const processedAlertsInTenant = [];
 
       for (const cand of candidates) {
         const ai = aiMap.get(cand.candidateId) || null;
@@ -1155,27 +1424,34 @@ function createTriageEngine(options = {}) {
         }
 
         for (const a of cand.alerts) {
-          state.processedAlertIds.push(a.alert_id);
+          processedAlertsInTenant.push(a.alert_id);
           analyzedCount++;
         }
       }
 
-      for (const groupPayload of mergedInTenant.values()) {
-        const existing = state.groups.find(
-          (g) =>
-            g.tenant_mapped === groupPayload.tenant_mapped &&
-            g.verdict === groupPayload.verdict &&
-            g.group_key === groupPayload.group_key
-        );
-        if (existing) {
-          mergeAlertWrappersIntoGroup(existing, groupPayload);
-        } else {
-          state.groups.unshift(groupPayload);
-        }
+      if (onTenantMerged) {
+        onTenantMerged({ tenant, groupPayloads: [...mergedInTenant.values()], processedAlertIds: processedAlertsInTenant });
       }
     }
 
-    return { excludedCount, analyzedCount };
+    return { analyzedCount, aborted: false };
+  }
+
+  async function processHitsIntoQueue(hits, runEpoch = null) {
+    if (runEpoch != null && runEpoch !== pollEpoch) {
+      return { excludedCount: 0, analyzedCount: 0, aborted: true };
+    }
+    const { excludedCount, byTenantBuckets } = preGroupByTenant(hits, { skipSeen: true, mutateExclusions: true });
+    const { analyzedCount, aborted } = await runAiOnTenantBuckets(byTenantBuckets, {
+      isAborted: () => runEpoch != null && runEpoch !== pollEpoch,
+      getExistingGroupKeys: (tenant) =>
+        [...new Set(state.groups.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key))].slice(0, 20),
+      onTenantMerged: ({ groupPayloads, processedAlertIds }) => {
+        appendSemanticGroupsToList(state.groups, groupPayloads);
+        for (const id of processedAlertIds) state.processedAlertIds.push(id);
+      },
+    });
+    return { excludedCount, analyzedCount, aborted };
   }
 
   const POLL_RANGE_MS = {
@@ -1420,6 +1696,8 @@ function createTriageEngine(options = {}) {
       rule_description: String(raw.rule?.description || '—'),
       src_ip: extractSrcIp(raw) || '—',
       path: extractPathCandidates(raw)[0] || '',
+      http_status: extractHttpStatus(raw) || '',
+      full_log: String(raw.full_log || ''),
       status_code: statusCode,
       status_label: statusLabel,
       group_id: matchedGroupId,
@@ -1428,14 +1706,15 @@ function createTriageEngine(options = {}) {
   }
 
   async function getLiveFeed(opts = {}) {
-    const scope = opts.scope === '24h' ? '24h' : 'watermark';
-    const sinceIso = scope === '24h'
-      ? new Date(Date.now() - 24 * 3600 * 1000).toISOString()
-      : state.watermarkTimestamp;
+    const range = String(opts.range || opts.scope || 'watermark').trim().toLowerCase() || 'watermark';
+    const win = resolvePollWindow({ range, from: opts.from, to: opts.to });
+    const maxSize = Math.min(Math.max(1, Number(opts.size) || 500), 1000);
 
     const { totalHits, hits } = await queryWazuhAlerts({
-      sinceIso,
-      size: Number(opts.size || 500),
+      sinceIso: win.sinceIso,
+      untilIso: win.untilIso,
+      inclusiveSince: win.inclusiveSince,
+      size: maxSize,
       minLevel: config.wazuh.minRuleLevel,
       maxLevel: config.wazuh.maxRuleLevel,
     });
@@ -1472,19 +1751,21 @@ function createTriageEngine(options = {}) {
       rawCount: allItems.length,
       displayedCount: filtered.length,
       parityMatch: totalHits === allItems.length,
-      scope,
+      scope: range,
+      range,
+      window: { sinceIso: win.sinceIso, untilIso: win.untilIso },
       watermarkTimestamp: state.watermarkTimestamp,
       fetchedAt: new Date().toISOString(),
       items: filtered,
     };
   }
 
-  function mergeGroups(groupIds = []) {
+  function mergeGroupsInList(list, groupIds = []) {
     const ids = [...new Set((groupIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
     if (ids.length < 2) {
       throw Object.assign(new Error('Pilih minimal 2 grup untuk digabungkan.'), { status: 400 });
     }
-    const selected = state.groups.filter((g) => ids.includes(g.group_id));
+    const selected = list.filter((g) => ids.includes(g.group_id));
     if (selected.length < 2) {
       throw Object.assign(new Error('Grup yang dipilih tidak ditemukan di antrean aktif.'), { status: 404 });
     }
@@ -1509,13 +1790,11 @@ function createTriageEngine(options = {}) {
     }
 
     const selectedSet = new Set(selected.map((g) => g.group_id));
-    state.groups = [base, ...state.groups.filter((g) => !selectedSet.has(g.group_id))];
-    saveState();
-    broadcastSse('state', getQueueSnapshot());
-    return { ok: true, group: base, snapshot: getQueueSnapshot() };
+    const nextList = [base, ...list.filter((g) => !selectedSet.has(g.group_id))];
+    return { nextList, base };
   }
 
-  function removeAlertsFromGroup({ groupId, alertIds = [] } = {}) {
+  function removeAlertsFromGroupInList(list, { groupId, alertIds = [] } = {}) {
     const gid = String(groupId || '').trim();
     if (!gid) {
       throw Object.assign(new Error('groupId wajib diisi.'), { status: 400 });
@@ -1524,7 +1803,7 @@ function createTriageEngine(options = {}) {
     if (!idSet.size) {
       throw Object.assign(new Error('Pilih minimal 1 alert untuk dihilangkan.'), { status: 400 });
     }
-    const grp = state.groups.find((g) => g.group_id === gid);
+    const grp = list.find((g) => g.group_id === gid);
     if (!grp) {
       throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
     }
@@ -1539,32 +1818,19 @@ function createTriageEngine(options = {}) {
       throw Object.assign(new Error('Alert yang dipilih tidak ditemukan dalam grup ini.'), { status: 404 });
     }
 
-    for (const al of removed) {
-      state.dismissedAlertIds.push(al.alert_id);
-      state.processedAlertIds.push(al.alert_id);
-    }
-
+    let nextList = list;
     let groupRemoved = false;
     if (remaining.length === 0) {
-      state.groups = state.groups.filter((g) => g.group_id !== gid);
+      nextList = list.filter((g) => g.group_id !== gid);
       groupRemoved = true;
     } else {
       grp.alerts = remaining;
       recomputeGroupMetadata(grp);
     }
-
-    saveState();
-    broadcastSse('state', getQueueSnapshot());
-    return {
-      ok: true,
-      removedCount: removed.length,
-      groupRemoved,
-      group: groupRemoved ? null : grp,
-      snapshot: getQueueSnapshot(),
-    };
+    return { nextList, removed, groupRemoved, group: groupRemoved ? null : grp };
   }
 
-  function splitGroupAlerts({ groupId, alertIds = [], incidentTitle = '', verdict = '' } = {}) {
+  function splitGroupAlertsInList(list, { groupId, alertIds = [], incidentTitle = '', verdict = '' } = {}) {
     const gid = String(groupId || '').trim();
     if (!gid) {
       throw Object.assign(new Error('groupId wajib diisi.'), { status: 400 });
@@ -1573,11 +1839,11 @@ function createTriageEngine(options = {}) {
     if (!idSet.size) {
       throw Object.assign(new Error('Pilih minimal 1 alert untuk dipisahkan.'), { status: 400 });
     }
-    const grpIndex = state.groups.findIndex((g) => g.group_id === gid);
+    const grpIndex = list.findIndex((g) => g.group_id === gid);
     if (grpIndex === -1) {
       throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
     }
-    const grp = state.groups[grpIndex];
+    const grp = list[grpIndex];
 
     const moved = [];
     const remaining = [];
@@ -1624,37 +1890,283 @@ function createTriageEngine(options = {}) {
     };
     recomputeGroupMetadata(newGroup);
 
-    state.groups.splice(grpIndex + 1, 0, newGroup);
-    saveState();
-    broadcastSse('state', getQueueSnapshot());
-    return {
-      ok: true,
-      sourceGroup: grp,
-      newGroup,
-      snapshot: getQueueSnapshot(),
-    };
+    const nextList = list.slice();
+    nextList.splice(grpIndex + 1, 0, newGroup);
+    return { nextList, sourceGroup: grp, newGroup };
   }
 
-  function dismissGroups({ groupIds = [], verdict = '' } = {}) {
+  function dismissGroupsInList(list, { groupIds = [], verdict = '' } = {}) {
     const idSet = new Set((groupIds || []).map((id) => String(id || '').trim()).filter(Boolean));
     const vFilter = String(verdict || '').trim().toUpperCase();
     const toRemove = [];
     const remaining = [];
 
-    for (const g of state.groups) {
+    for (const g of list) {
       const matchId = idSet.size > 0 && idSet.has(g.group_id);
       const matchVerdict = vFilter && g.verdict === vFilter;
       if (matchId || matchVerdict) toRemove.push(g);
       else remaining.push(g);
     }
+    return { toRemove, remaining };
+  }
 
+  function mergeGroups(groupIds = []) {
+    const { nextList, base } = mergeGroupsInList(state.groups, groupIds);
+    state.groups = nextList;
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return { ok: true, group: base, snapshot: getQueueSnapshot() };
+  }
+
+  function removeAlertsFromGroup(opts = {}) {
+    const { nextList, removed, groupRemoved, group } = removeAlertsFromGroupInList(state.groups, opts);
+    state.groups = nextList;
+    for (const al of removed) {
+      state.dismissedAlertIds.push(al.alert_id);
+      state.processedAlertIds.push(al.alert_id);
+    }
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      removedCount: removed.length,
+      groupRemoved,
+      group,
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
+  function splitGroupAlerts(opts = {}) {
+    const { nextList, sourceGroup, newGroup } = splitGroupAlertsInList(state.groups, opts);
+    state.groups = nextList;
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      sourceGroup,
+      newGroup,
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
+  function upsertExclusionRule(ruleInput) {
+    const candidate = sanitizeExclusionRule(ruleInput, config.exclusionRules.length);
+    if (!candidate || !candidate.pattern) {
+      throw Object.assign(new Error('Pola exclusion rule wajib diisi.'), { status: 400 });
+    }
+    const normPat = candidate.pattern.toLowerCase();
+    const existing = config.exclusionRules.find((r) =>
+      r.target === candidate.target &&
+      r.mode === candidate.mode &&
+      String(r.pattern || '').trim().toLowerCase() === normPat
+    );
+    if (existing) {
+      let dirty = false;
+      if (!existing.enabled) {
+        existing.enabled = true;
+        dirty = true;
+      }
+      if (dirty) {
+        config.updatedAt = new Date().toISOString();
+        saveConfig();
+        broadcastSse('state', getQueueSnapshot());
+      }
+      return { rule: cloneJson(existing), alreadyExisted: true };
+    }
+    config.exclusionRules.push(candidate);
+    config.updatedAt = new Date().toISOString();
+    saveConfig();
+    broadcastSse('state', getQueueSnapshot());
+    return { rule: cloneJson(candidate), alreadyExisted: false };
+  }
+
+  function listExclusionRules() {
+    const rules = cloneJson(config.exclusionRules || []);
+    return {
+      ok: true,
+      rules,
+      total: rules.length,
+      enabledCount: rules.filter((r) => r.enabled !== false).length,
+    };
+  }
+
+  function addExclusionRule(payload = {}) {
+    let candidate = null;
+    if (payload.rawAlert || (Array.isArray(payload.alerts) && payload.alerts.length)) {
+      const list = Array.isArray(payload.alerts) && payload.alerts.length ? payload.alerts : [payload.rawAlert];
+      candidate = deriveExclusionRuleFromAlerts(list, payload.fallbackTitle || '');
+      if (!candidate) {
+        throw Object.assign(new Error('Tidak dapat mendeteksi pola exclusion otomatis dari alert tersebut.'), { status: 400 });
+      }
+    } else {
+      candidate = {
+        target: payload.target,
+        mode: payload.mode,
+        pattern: payload.pattern,
+        enabled: payload.enabled !== false,
+        source: payload.source === 'auto_ignore' ? 'auto_ignore' : 'manual',
+        createdAt: new Date().toISOString(),
+        note: payload.note || '',
+      };
+    }
+    const { rule, alreadyExisted } = upsertExclusionRule(candidate);
+    return {
+      ok: true,
+      rule,
+      alreadyExisted,
+      rules: cloneJson(config.exclusionRules),
+      total: config.exclusionRules.length,
+    };
+  }
+
+  function updateExclusionRule(id, patch = {}) {
+    const ruleId = String(id || '').trim();
+    const idx = config.exclusionRules.findIndex((r) => r.id === ruleId);
+    if (idx === -1) {
+      throw Object.assign(new Error('Aturan exclude tidak ditemukan.'), { status: 404 });
+    }
+    const cur = config.exclusionRules[idx];
+    const next = sanitizeExclusionRule({
+      id: cur.id,
+      target: patch.target !== undefined ? patch.target : cur.target,
+      mode: patch.mode !== undefined ? patch.mode : cur.mode,
+      pattern: patch.pattern !== undefined ? patch.pattern : cur.pattern,
+      enabled: patch.enabled !== undefined ? patch.enabled : cur.enabled,
+      source: cur.source,
+      createdAt: cur.createdAt,
+      note: patch.note !== undefined ? patch.note : cur.note,
+    }, idx);
+    if (!next || !next.pattern) {
+      throw Object.assign(new Error('Pola exclusion rule tidak boleh kosong.'), { status: 400 });
+    }
+    config.exclusionRules[idx] = next;
+    config.updatedAt = new Date().toISOString();
+    saveConfig();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      rule: cloneJson(next),
+      rules: cloneJson(config.exclusionRules),
+      total: config.exclusionRules.length,
+    };
+  }
+
+  function deleteExclusionRule(id) {
+    const ruleId = String(id || '').trim();
+    const before = config.exclusionRules.length;
+    config.exclusionRules = config.exclusionRules.filter((r) => r.id !== ruleId);
+    if (config.exclusionRules.length === before) {
+      throw Object.assign(new Error('Aturan exclude tidak ditemukan.'), { status: 404 });
+    }
+    config.updatedAt = new Date().toISOString();
+    saveConfig();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      deletedId: ruleId,
+      rules: cloneJson(config.exclusionRules),
+      total: config.exclusionRules.length,
+    };
+  }
+
+  function ignoreAndExcludeInList(list, opts = {}, { isQueue = true } = {}) {
+    const groupId = String(opts.groupId || '').trim();
+    const alertIds = Array.isArray(opts.alertIds) ? opts.alertIds.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const groupIds = Array.isArray(opts.groupIds)
+      ? opts.groupIds.map((x) => String(x || '').trim()).filter(Boolean)
+      : (groupId ? [groupId] : []);
+
+    const rulesAdded = [];
+    const rulesExisting = [];
+    let removedGroups = 0;
+    let removedAlerts = 0;
+    let nextList = list;
+    let groupRemoved = false;
+
+    const recordExcludedAlerts = (alerts, rule) => {
+      removedAlerts += alerts.length;
+      if (!isQueue) return;
+      for (const al of alerts) {
+        state.excludedAlertMap[al.alert_id] = { ruleId: rule.id, ruleLabel: rule.pattern };
+        state.processedAlertIds.push(al.alert_id);
+      }
+    };
+
+    if (groupId && alertIds.length > 0) {
+      const grp = nextList.find((g) => g.group_id === groupId);
+      if (!grp) {
+        throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+      }
+      const res = removeAlertsFromGroupInList(nextList, { groupId, alertIds });
+      nextList = res.nextList;
+      groupRemoved = res.groupRemoved;
+      if (groupRemoved) removedGroups = 1;
+      const derived = deriveExclusionRuleFromAlerts(res.removed, grp.incident_title || '');
+      if (!derived) {
+        throw Object.assign(new Error('Tidak dapat mendeteksi pola exclusion otomatis dari alert terpilih.'), { status: 400 });
+      }
+      const { rule, alreadyExisted } = upsertExclusionRule(derived);
+      if (alreadyExisted) rulesExisting.push(rule);
+      else rulesAdded.push(rule);
+      recordExcludedAlerts(res.removed, rule);
+    } else if (groupIds.length > 0) {
+      const { toRemove, remaining } = dismissGroupsInList(nextList, { groupIds });
+      if (!toRemove.length) {
+        throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
+      }
+      nextList = remaining;
+      removedGroups = toRemove.length;
+      groupRemoved = true;
+      for (const grp of toRemove) {
+        const derived = deriveExclusionRuleFromAlerts(grp.alerts || [], grp.incident_title || '');
+        if (!derived) continue;
+        const { rule, alreadyExisted } = upsertExclusionRule(derived);
+        if (alreadyExisted) {
+          if (!rulesExisting.some((x) => x.id === rule.id)) rulesExisting.push(rule);
+        } else {
+          if (!rulesAdded.some((x) => x.id === rule.id)) rulesAdded.push(rule);
+        }
+        recordExcludedAlerts(grp.alerts || [], rule);
+      }
+    } else {
+      throw Object.assign(new Error('Pilih grup atau alert yang akan diabaikan & di-exclude.'), { status: 400 });
+    }
+
+    return {
+      nextList,
+      rulesAdded,
+      rulesExisting,
+      removedGroups,
+      removedAlerts,
+      groupRemoved,
+    };
+  }
+
+  function ignoreAndExcludeGroups(opts = {}) {
+    const res = ignoreAndExcludeInList(state.groups, opts, { isQueue: true });
+    state.groups = res.nextList;
+    saveState();
+    broadcastSse('state', getQueueSnapshot());
+    return {
+      ok: true,
+      rulesAdded: res.rulesAdded,
+      rulesExisting: res.rulesExisting,
+      removedGroups: res.removedGroups,
+      removedAlerts: res.removedAlerts,
+      groupRemoved: res.groupRemoved,
+      exclusionRules: cloneJson(config.exclusionRules),
+      snapshot: getQueueSnapshot(),
+    };
+  }
+
+  function dismissGroups(opts = {}) {
+    const { toRemove, remaining } = dismissGroupsInList(state.groups, opts);
     for (const g of toRemove) {
       for (const a of g.alerts || []) {
         state.dismissedAlertIds.push(a.alert_id);
         state.processedAlertIds.push(a.alert_id);
       }
     }
-
     state.groups = remaining;
     saveState();
     broadcastSse('state', getQueueSnapshot());
@@ -1723,7 +2235,7 @@ function createTriageEngine(options = {}) {
     };
   }
 
-  function promoteToCase(payload = {}, user = null) {
+  function buildPromotePackage(groupList, payload = {}, user = null) {
     const groupId = String(payload.groupId || '').trim();
     const wantedAlertIds = Array.isArray(payload.alertIds) && payload.alertIds.length
       ? new Set(payload.alertIds.map((x) => String(x || '').trim()).filter(Boolean))
@@ -1735,7 +2247,7 @@ function createTriageEngine(options = {}) {
     let alertWrappers = [];
 
     if (groupId) {
-      const grp = state.groups.find((g) => g.group_id === groupId);
+      const grp = groupList.find((g) => g.group_id === groupId);
       if (!grp) {
         throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
       }
@@ -1797,6 +2309,28 @@ function createTriageEngine(options = {}) {
     caseHistory.unshift(historyEntry);
     saveCaseHistory();
 
+    return {
+      groupId,
+      resolvedTenant,
+      incidentTitle,
+      chunks,
+      wazuhAlertIds,
+      nowIso,
+      historyEntry,
+    };
+  }
+
+  function promoteToCase(payload = {}, user = null) {
+    const {
+      groupId,
+      resolvedTenant,
+      incidentTitle,
+      chunks,
+      wazuhAlertIds,
+      nowIso,
+      historyEntry,
+    } = buildPromotePackage(state.groups, payload, user);
+
     for (const id of wazuhAlertIds) {
       state.caseCreatedAlertIds.push(id);
       state.processedAlertIds.push(id);
@@ -1836,6 +2370,263 @@ function createTriageEngine(options = {}) {
       watermarkTimestamp: state.watermarkTimestamp,
       historyEntry,
       snapshot: getQueueSnapshot(),
+    };
+  }
+
+  /* ---------------- Isolated 24h Batch Pull & Progress Job ---------------- */
+
+  function startBatch24hPull(opts = {}) {
+    if (!String(config.wazuh.url || '').trim()) {
+      throw Object.assign(new Error('Wazuh Indexer URL belum dikonfigurasi.'), { status: 400 });
+    }
+    if (batch24h.job.running) {
+      throw Object.assign(new Error('Penarikan 24 Jam sedang berjalan. Tunggu selesai atau klik Batalkan.'), { status: 409 });
+    }
+    const range = String(opts?.range || '24h').trim() || '24h';
+    const win = resolvePollWindow({ range, from: opts?.from, to: opts?.to });
+    const maxSize = Math.min(Math.max(10, Number(opts?.size) || 500), 1000);
+    const tenantFilter = String(opts?.tenantFilter || '').trim();
+
+    batch24hEpoch++;
+    const runEpoch = batch24hEpoch;
+
+    batch24h.groups = [];
+    batch24h.job = {
+      running: true,
+      phase: 'fetching',
+      percent: 5,
+      message: 'Menarik alert dari Wazuh Indexer…',
+      range,
+      sinceIso: win.sinceIso,
+      untilIso: win.untilIso,
+      fetchedCount: 0,
+      excludedCount: 0,
+      totalCandidates: 0,
+      processedChunks: 0,
+      totalChunks: 0,
+      currentTenant: tenantFilter || null,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+    };
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+
+    void (async () => {
+      try {
+        const { hits } = await queryWazuhAlerts({
+          sinceIso: win.sinceIso,
+          untilIso: win.untilIso,
+          inclusiveSince: true,
+          size: maxSize,
+          minLevel: config.wazuh.minRuleLevel,
+          maxLevel: config.wazuh.maxRuleLevel,
+        });
+        if (runEpoch !== batch24hEpoch) return;
+
+        batch24h.job.phase = 'grouping';
+        batch24h.job.percent = 20;
+        batch24h.job.fetchedCount = hits.length;
+        batch24h.job.message = `Mengelompokkan ${hits.length} alert…`;
+        broadcastSse('batch24h', getBatch24hSnapshot());
+
+        const { excludedCount, byTenantBuckets } = preGroupByTenant(hits, {
+          skipSeen: false,
+          mutateExclusions: false,
+          tenantFilter,
+        });
+        if (runEpoch !== batch24hEpoch) return;
+
+        let totalCandidates = 0;
+        let totalChunks = 0;
+        for (const bucketMap of byTenantBuckets.values()) {
+          const n = bucketMap.size;
+          if (n > 0) {
+            totalCandidates += n;
+            totalChunks += Math.ceil(n / OLLAMA_MICRO_BATCH_SIZE);
+          }
+        }
+
+        batch24h.job.excludedCount = excludedCount;
+        batch24h.job.totalCandidates = totalCandidates;
+        batch24h.job.totalChunks = totalChunks;
+
+        if (totalChunks === 0) {
+          batch24h.job.running = false;
+          batch24h.job.phase = 'done';
+          batch24h.job.percent = 100;
+          batch24h.job.currentTenant = null;
+          batch24h.job.finishedAt = new Date().toISOString();
+          batch24h.job.message = `Selesai · 0 kandidat dari ${hits.length} alert (Excluded: ${excludedCount})`;
+          saveBatch24h();
+          broadcastSse('batch24h', getBatch24hSnapshot());
+          return;
+        }
+
+        batch24h.job.phase = 'analyzing';
+        batch24h.job.percent = 25;
+        batch24h.job.message = `Menganalisis AI (${totalChunks} batch, ${totalCandidates} kandidat)…`;
+        broadcastSse('batch24h', getBatch24hSnapshot());
+
+        const { aborted } = await runAiOnTenantBuckets(byTenantBuckets, {
+          isAborted: () => runEpoch !== batch24hEpoch,
+          getExistingGroupKeys: (tenant) =>
+            [...new Set(batch24h.groups.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key))].slice(0, 20),
+          onChunkProgress: ({ tenant, processedChunks }) => {
+            if (runEpoch !== batch24hEpoch) return;
+            batch24h.job.processedChunks = processedChunks;
+            batch24h.job.currentTenant = tenant;
+            batch24h.job.percent = 25 + Math.round((processedChunks / Math.max(1, totalChunks)) * 70);
+            batch24h.job.message = `Menganalisis AI batch ${processedChunks}/${totalChunks} (tenant: ${tenant})…`;
+            broadcastSse('batch24h', getBatch24hSnapshot());
+          },
+          onTenantMerged: ({ groupPayloads }) => {
+            if (runEpoch !== batch24hEpoch) return;
+            appendSemanticGroupsToList(batch24h.groups, groupPayloads);
+            broadcastSse('batch24h', getBatch24hSnapshot());
+          },
+        });
+        if (aborted || runEpoch !== batch24hEpoch) return;
+
+        batch24h.job.running = false;
+        batch24h.job.phase = 'done';
+        batch24h.job.percent = 100;
+        batch24h.job.currentTenant = null;
+        batch24h.job.finishedAt = new Date().toISOString();
+        batch24h.job.message = `Selesai · ${batch24h.groups.length} grup dari ${hits.length} alert (Excluded: ${excludedCount})`;
+        saveBatch24h();
+        broadcastSse('batch24h', getBatch24hSnapshot());
+      } catch (err) {
+        if (runEpoch !== batch24hEpoch) return;
+        batch24h.job.running = false;
+        batch24h.job.phase = 'error';
+        batch24h.job.error = err.message || 'Gagal menarik 24 jam';
+        batch24h.job.currentTenant = null;
+        batch24h.job.finishedAt = new Date().toISOString();
+        batch24h.job.message = `Gagal: ${batch24h.job.error}`;
+        saveBatch24h();
+        broadcastSse('batch24h', getBatch24hSnapshot());
+      }
+    })();
+
+    return { ok: true, started: true, snapshot: getBatch24hSnapshot() };
+  }
+
+  function cancelBatch24hPull() {
+    batch24hEpoch++;
+    batch24h.job.running = false;
+    batch24h.job.phase = 'cancelled';
+    batch24h.job.currentTenant = null;
+    batch24h.job.finishedAt = new Date().toISOString();
+    batch24h.job.message = 'Penarikan dibatalkan oleh analis';
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return { ok: true, snapshot: getBatch24hSnapshot() };
+  }
+
+  function clearBatch24h() {
+    batch24hEpoch++;
+    const clearedGroups = batch24h.groups.length;
+    batch24h = defaultBatch24hState();
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return { ok: true, clearedGroups, snapshot: getBatch24hSnapshot() };
+  }
+
+  function mergeBatch24hGroups(groupIds = []) {
+    const { nextList, base } = mergeGroupsInList(batch24h.groups, groupIds);
+    batch24h.groups = nextList;
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return { ok: true, group: base, snapshot: getBatch24hSnapshot() };
+  }
+
+  function splitBatch24hAlerts(opts = {}) {
+    const { nextList, sourceGroup, newGroup } = splitGroupAlertsInList(batch24h.groups, opts);
+    batch24h.groups = nextList;
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return { ok: true, sourceGroup, newGroup, snapshot: getBatch24hSnapshot() };
+  }
+
+  function removeBatch24hAlerts(opts = {}) {
+    const { nextList, removed, groupRemoved, group } = removeAlertsFromGroupInList(batch24h.groups, opts);
+    batch24h.groups = nextList;
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return {
+      ok: true,
+      removedCount: removed.length,
+      groupRemoved,
+      group,
+      snapshot: getBatch24hSnapshot(),
+    };
+  }
+
+  function dismissBatch24hGroups(opts = {}) {
+    const { toRemove, remaining } = dismissGroupsInList(batch24h.groups, opts);
+    batch24h.groups = remaining;
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return {
+      ok: true,
+      dismissedGroups: toRemove.length,
+      snapshot: getBatch24hSnapshot(),
+    };
+  }
+
+  function ignoreAndExcludeBatch24h(opts = {}) {
+    const res = ignoreAndExcludeInList(batch24h.groups, opts, { isQueue: false });
+    batch24h.groups = res.nextList;
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    return {
+      ok: true,
+      rulesAdded: res.rulesAdded,
+      rulesExisting: res.rulesExisting,
+      removedGroups: res.removedGroups,
+      removedAlerts: res.removedAlerts,
+      groupRemoved: res.groupRemoved,
+      exclusionRules: cloneJson(config.exclusionRules),
+      snapshot: getBatch24hSnapshot(),
+    };
+  }
+
+  function promoteBatch24hToCase(payload = {}, user = null) {
+    const {
+      groupId,
+      resolvedTenant,
+      incidentTitle,
+      chunks,
+      wazuhAlertIds,
+      historyEntry,
+    } = buildPromotePackage(batch24h.groups, payload, user);
+
+    if (groupId) {
+      const grp = batch24h.groups.find((g) => g.group_id === groupId);
+      if (grp) {
+        const promotedSet = new Set(wazuhAlertIds);
+        grp.alerts = (grp.alerts || []).filter((a) => !promotedSet.has(a.alert_id));
+        if (grp.alerts.length === 0) {
+          batch24h.groups = batch24h.groups.filter((g) => g.group_id !== groupId);
+        } else {
+          recomputeGroupMetadata(grp);
+        }
+      }
+    }
+
+    saveBatch24h();
+    broadcastSse('batch24h', getBatch24hSnapshot());
+    broadcastSse('state', getQueueSnapshot());
+
+    return {
+      ok: true,
+      tenant: resolvedTenant,
+      incidentTitle,
+      chunkCount: chunks.length,
+      chunks,
+      historyEntry,
+      snapshot: getBatch24hSnapshot(),
     };
   }
 
@@ -1902,6 +2693,10 @@ function createTriageEngine(options = {}) {
     DEFAULT_EXCLUSION_RULES,
     getConfig: () => sanitizeConfigForClient(config),
     updateConfig,
+    listExclusionRules,
+    addExclusionRule,
+    updateExclusionRule,
+    deleteExclusionRule,
     testWazuhConnection,
     testOllamaConnection,
     queryWazuhAlerts,
@@ -1916,9 +2711,20 @@ function createTriageEngine(options = {}) {
     splitGroupAlerts,
     removeAlertsFromGroup,
     dismissGroups,
+    ignoreAndExcludeGroups,
     resetQueue,
     purgeTriageDatabase,
     promoteToCase,
+    getBatch24hSnapshot,
+    startBatch24hPull,
+    cancelBatch24hPull,
+    clearBatch24h,
+    mergeBatch24hGroups,
+    splitBatch24hAlerts,
+    removeBatch24hAlerts,
+    dismissBatch24hGroups,
+    ignoreAndExcludeBatch24h,
+    promoteBatch24hToCase,
     listCaseHistory,
     fetchHistoryWazuhDetails,
     start,
@@ -1931,6 +2737,7 @@ module.exports = {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_EXCLUSION_RULES,
   evaluateExclusions,
+  deriveExclusionRuleFromAlerts,
   normalizePath,
   resolveTenant,
   severityLabel,

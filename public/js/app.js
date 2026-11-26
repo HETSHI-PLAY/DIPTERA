@@ -3536,29 +3536,38 @@
     if (state.view === 'history') heading.textContent = 'Riwayat';
     else if (state.view === 'approvals') heading.textContent = 'Approval';
     else if (state.view === 'triage') heading.textContent = 'AI Triage Queue';
+    else if (state.view === 'triage-24h') heading.textContent = 'Tarik Alert 24 Jam Terakhir';
     else if (state.view === 'live-feed') heading.textContent = 'Realtime Wazuh Feed (1:1)';
     else if (state.view === 'triage-history') heading.textContent = 'Audit Case Triage';
+    else if (state.view === 'triage-exclusions') heading.textContent = 'Daftar Exclusion Rules';
+    else if (state.view === 'triage-inspector') heading.textContent = 'Inspector Alert (Wazuh View)';
     else if (state.view === 'settings') heading.textContent = 'Pengaturan';
     else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Repeating' : 'Reporting';
   }
 
   function switchView(view) {
-    const allowed = ['queue', 'history', 'approvals', 'settings', 'triage', 'live-feed', 'triage-history'];
+    const allowed = ['queue', 'history', 'approvals', 'settings', 'triage', 'triage-24h', 'live-feed', 'triage-history', 'triage-exclusions', 'triage-inspector'];
     state.view = allowed.includes(view) ? view : 'queue';
     const isQueue = state.view === 'queue';
     const isHist = state.view === 'history';
     const isAppr = state.view === 'approvals';
     const isTriage = state.view === 'triage';
+    const isTriage24h = state.view === 'triage-24h';
     const isLive = state.view === 'live-feed';
     const isTrgHist = state.view === 'triage-history';
+    const isTrgEx = state.view === 'triage-exclusions';
+    const isTrgInsp = state.view === 'triage-inspector';
     const isSettings = state.view === 'settings';
 
     $('#view-queue').hidden = !isQueue;
     $('#view-history').hidden = !isHist;
     $('#view-approvals').hidden = !isAppr;
     if ($('#view-triage')) $('#view-triage').hidden = !isTriage;
+    if ($('#view-triage-24h')) $('#view-triage-24h').hidden = !isTriage24h;
     if ($('#view-live-feed')) $('#view-live-feed').hidden = !isLive;
     if ($('#view-triage-history')) $('#view-triage-history').hidden = !isTrgHist;
+    if ($('#view-triage-exclusions')) $('#view-triage-exclusions').hidden = !isTrgEx;
+    if ($('#view-triage-inspector')) $('#view-triage-inspector').hidden = !isTrgInsp;
     $('#view-settings').hidden = !isSettings;
 
     $('#tab-queue').classList.toggle('active', isQueue);
@@ -3569,10 +3578,14 @@
     $('#tab-approvals').setAttribute('aria-selected', String(isAppr));
     $('#tab-triage')?.classList.toggle('active', isTriage);
     $('#tab-triage')?.setAttribute('aria-selected', String(isTriage));
+    $('#tab-triage-24h')?.classList.toggle('active', isTriage24h);
+    $('#tab-triage-24h')?.setAttribute('aria-selected', String(isTriage24h));
     $('#tab-live-feed')?.classList.toggle('active', isLive);
     $('#tab-live-feed')?.setAttribute('aria-selected', String(isLive));
     $('#tab-triage-history')?.classList.toggle('active', isTrgHist);
     $('#tab-triage-history')?.setAttribute('aria-selected', String(isTrgHist));
+    $('#tab-triage-exclusions')?.classList.toggle('active', isTrgEx);
+    $('#tab-triage-exclusions')?.setAttribute('aria-selected', String(isTrgEx));
     $('#tab-settings').classList.toggle('active', isSettings);
     $('#tab-settings').setAttribute('aria-selected', String(isSettings));
 

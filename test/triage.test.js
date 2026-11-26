@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { createServer } = require('../src/server.js');
-const { evaluateExclusions, chunkAlertsForPromote } = require('../src/services/triage.js');
+const { evaluateExclusions, deriveExclusionRuleFromAlerts, chunkAlertsForPromote } = require('../src/services/triage.js');
 
 function httpJson(url, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -676,7 +676,175 @@ async function main() {
     const afterAbortQueue = await httpJson(`${baseUrl}/api/triage/queue`);
     assert.equal(afterAbortQueue.json.groups.length, 0, 'Aborted in-flight poll must not write back to purged queue');
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (12/12)');
+    // 13. Isolated 24h Batch Pull with progress bar + split/remove/promote/clear (must NOT pollute main AI Triage queue)
+    const run24Res = await httpJson(`${baseUrl}/api/triage/batch24h/run`, {
+      method: 'POST',
+      body: {
+        range: 'custom',
+        from: '2029-11-26T10:00:00.000Z',
+        to: '2029-11-26T10:01:20.000Z',
+        size: 100,
+      },
+    });
+    assert.equal(run24Res.status, 202);
+    assert.equal(run24Res.json.started, true);
+
+    let snap24 = null;
+    for (let i = 0; i < 40; i++) {
+      const r = await httpJson(`${baseUrl}/api/triage/batch24h`);
+      snap24 = r.json;
+      if (snap24.job && snap24.job.running === false) break;
+      await new Promise((rWait) => setTimeout(rWait, 40));
+    }
+    assert.ok(snap24 && snap24.job.phase === 'done', `Expected batch24h done, got ${snap24?.job?.phase}`);
+    assert.equal(snap24.job.percent, 100);
+    assert.ok(snap24.groups.length >= 2);
+    assert.equal(snap24.job.fetchedCount, 22);
+
+    // Main AI Triage queue MUST stay 0 (strictly isolated)
+    const mainQueueCheck = await httpJson(`${baseUrl}/api/triage/queue`);
+    assert.equal(mainQueueCheck.json.groups.length, 0);
+
+    const tp24 = snap24.groups.find((g) => g.verdict === 'TRUE_POSITIVE');
+    assert.ok(tp24 && tp24.alert_count === 6);
+
+    const split24 = await httpJson(`${baseUrl}/api/triage/batch24h/split`, {
+      method: 'POST',
+      body: { groupId: tp24.group_id, alertIds: ['w-burst-1', 'w-burst-2'], incidentTitle: '24h Split Case' },
+    });
+    assert.equal(split24.status, 200);
+    assert.equal(split24.json.sourceGroup.alert_count, 4);
+    assert.equal(split24.json.newGroup.alert_count, 2);
+
+    const rem24 = await httpJson(`${baseUrl}/api/triage/batch24h/remove-alerts`, {
+      method: 'POST',
+      body: { groupId: split24.json.newGroup.group_id, alertIds: ['w-burst-1'] },
+    });
+    assert.equal(rem24.status, 200);
+    assert.equal(rem24.json.group.alert_count, 1);
+
+    const promo24 = await httpJson(`${baseUrl}/api/triage/batch24h/promote`, {
+      method: 'POST',
+      body: {
+        groupId: split24.json.newGroup.group_id,
+        workspace: 'soc',
+        irisCaseId: '#9924',
+        irisTicketNumber: '30240',
+      },
+    });
+    assert.equal(promo24.status, 200);
+    assert.equal(promo24.json.chunks[0].length, 1);
+
+    // Main queue & watermark still untouched after 24h promote
+    const mainAfter24Promo = await httpJson(`${baseUrl}/api/triage/queue`);
+    assert.equal(mainAfter24Promo.json.groups.length, 0);
+    assert.equal(mainAfter24Promo.json.watermarkTimestamp, null);
+
+    const clear24 = await httpJson(`${baseUrl}/api/triage/batch24h/clear`, { method: 'POST', body: {} });
+    assert.equal(clear24.status, 200);
+    assert.equal(clear24.json.snapshot.groups.length, 0);
+
+    // 14. Live Feed extended time ranges (1h, 7d, custom from/to + size, and invalid custom 400)
+    wazuhQueries = [];
+    const live1h = await httpJson(`${baseUrl}/api/triage/live?range=1h&size=25`);
+    assert.equal(live1h.status, 200);
+    assert.equal(live1h.json.range, '1h');
+    assert.ok(wazuhQueries.length >= 1);
+    assert.equal(wazuhQueries[wazuhQueries.length - 1].body.size, 25);
+
+    const liveCustom = await httpJson(
+      `${baseUrl}/api/triage/live?range=custom&from=${encodeURIComponent('2029-11-26T10:00:00.000Z')}&to=${encodeURIComponent('2029-11-26T10:00:10.000Z')}&size=10`,
+    );
+    assert.equal(liveCustom.status, 200);
+    assert.equal(liveCustom.json.totalHits, 6);
+    assert.equal(liveCustom.json.items.length, 6);
+
+    const liveBadRange = await httpJson(
+      `${baseUrl}/api/triage/live?range=custom&from=${encodeURIComponent('2029-11-26T10:05:00.000Z')}&to=${encodeURIComponent('2029-11-26T10:00:00.000Z')}`,
+    );
+    assert.equal(liveBadRange.status, 400);
+
+    // 15. deriveExclusionRuleFromAlerts + ignore-exclude (auto rule creation, dedup, queue & batch24h, + Exclusion CRUD)
+    const derivedPath = deriveExclusionRuleFromAlerts([
+      { raw_wazuh_alert: { data: { url: '/cdn-cgi/rum?foo=1' }, full_log: 'GET /cdn-cgi/rum?foo=1 HTTP/1.1 404', rule: { description: 'Web 404' } } },
+      { raw_wazuh_alert: { data: { url: '/cdn-cgi/rum?foo=2' }, full_log: 'GET /cdn-cgi/rum?foo=2 HTTP/1.1 404', rule: { description: 'Web 404' } } },
+    ], 'Noise CDN RUM');
+    assert.equal(derivedPath.target, 'path');
+    assert.equal(derivedPath.mode, 'contains');
+    assert.equal(derivedPath.pattern, '/cdn-cgi/rum');
+
+    const derivedLog = deriveExclusionRuleFromAlerts([
+      { raw_wazuh_alert: { full_log: '2029-11-26T10:00:00Z systemd: Started Session c991 of user backup.', rule: { description: 'Systemd noise' } } },
+      { raw_wazuh_alert: { full_log: '2029-11-26T10:01:00Z systemd: Started Session c992 of user backup.', rule: { description: 'Systemd noise' } } },
+    ], 'Systemd session');
+    assert.equal(derivedLog.target, 'full_log');
+    assert.match(derivedLog.pattern, /Started Session/);
+
+    // Poll burst /.env alerts into main queue, then click "Abaikan + Exclude"
+    const beforeIgnorePoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:00:00.000Z', to: '2029-11-26T10:00:10.000Z', size: 20 },
+    });
+    assert.equal(beforeIgnorePoll.json.snapshot.groups.length, 1);
+    const ignoreTargetGrp = beforeIgnorePoll.json.snapshot.groups[0];
+
+    const ignoreRes = await httpJson(`${baseUrl}/api/triage/ignore-exclude`, {
+      method: 'POST',
+      body: { groupIds: [ignoreTargetGrp.group_id] },
+    });
+    assert.equal(ignoreRes.status, 200);
+    assert.equal(ignoreRes.json.removedGroups, 1);
+    assert.equal(ignoreRes.json.rulesAdded.length, 1);
+    assert.equal(ignoreRes.json.rulesAdded[0].pattern, '/.env');
+    assert.equal(ignoreRes.json.rulesAdded[0].source, 'auto_ignore');
+    assert.equal(ignoreRes.json.snapshot.groups.length, 0);
+
+    // Purge queue and re-poll SAME /.env hits -> must now be auto-excluded (0 analyzed)
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    const postAutoExcludePoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:00:00.000Z', to: '2029-11-26T10:00:10.000Z', size: 20 },
+    });
+    assert.equal(postAutoExcludePoll.status, 200);
+    assert.equal(postAutoExcludePoll.json.excludedCount, 6);
+    assert.equal(postAutoExcludePoll.json.analyzedCount, 0);
+
+    // Exclusion Rules CRUD (GET, POST manual, PATCH toggle/edit, DELETE)
+    const listExRes = await httpJson(`${baseUrl}/api/triage/exclusions`);
+    assert.equal(listExRes.status, 200);
+    const autoEnvRule = listExRes.json.rules.find((r) => r.pattern === '/.env' && r.source === 'auto_ignore');
+    assert.ok(autoEnvRule);
+
+    const addManualEx = await httpJson(`${baseUrl}/api/triage/exclusions`, {
+      method: 'POST',
+      body: { target: 'path', mode: 'starts_with', pattern: '/healthz', note: 'Probe k8s' },
+    });
+    assert.equal(addManualEx.status, 201);
+    assert.equal(addManualEx.json.rule.source, 'manual');
+
+    // Duplicate rule returns 200 alreadyExisted without creating a duplicate row
+    const addDupEx = await httpJson(`${baseUrl}/api/triage/exclusions`, {
+      method: 'POST',
+      body: { target: 'path', mode: 'starts_with', pattern: '/healthz' },
+    });
+    assert.equal(addDupEx.status, 200);
+    assert.equal(addDupEx.json.alreadyExisted, true);
+
+    const patchEx = await httpJson(`${baseUrl}/api/triage/exclusions/${encodeURIComponent(addManualEx.json.rule.id)}`, {
+      method: 'PATCH',
+      body: { enabled: false, note: 'Disabled temporary' },
+    });
+    assert.equal(patchEx.status, 200);
+    assert.equal(patchEx.json.rule.enabled, false);
+    assert.equal(patchEx.json.rule.note, 'Disabled temporary');
+
+    const delEx = await httpJson(`${baseUrl}/api/triage/exclusions/${encodeURIComponent(addManualEx.json.rule.id)}`, {
+      method: 'DELETE',
+    });
+    assert.equal(delEx.status, 200);
+    assert.equal(delEx.json.deletedId, addManualEx.json.rule.id);
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (15/15)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

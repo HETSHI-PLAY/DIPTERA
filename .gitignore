@@ -30,6 +30,7 @@ docker-compose.prod.yml
 data/
 server-config.json
 triage-state.json
+triage-24h.json
 case-history.json
 counters.json
 approvals.json

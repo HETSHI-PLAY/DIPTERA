@@ -27,6 +27,7 @@ credentials*.json
 *token*.json
 server-config.json
 triage-state.json
+triage-24h.json
 case-history.json
 docker-compose.override.yml
 docker-compose.local.yml
