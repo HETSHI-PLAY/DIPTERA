@@ -20,12 +20,18 @@ const VALID_EXCLUSION_TARGETS = [
   'filename',
   'rule_description',
   'rule_id',
+  'http_status',
   'src_ip',
   'agent_name',
   'user_agent',
+  'referer',
   'full_log',
 ];
 const VALID_EXCLUSION_MODES = ['wildcard', 'contains', 'starts_with', 'regex'];
+const ATTACK_SIGNATURE_RULE_IDS = new Set([
+  '31103', '31104', '31105', '31106', '31107', '31109', '31110',
+  '31166', '31167', '31168', '31169',
+]);
 const EXCLUSION_SUGGEST_SCHEMA = {
   type: 'object',
   properties: {
@@ -35,9 +41,15 @@ const EXCLUSION_SUGGEST_SCHEMA = {
       items: {
         type: 'object',
         properties: {
+          tenant: { type: 'string' },
           target: { type: 'string', enum: VALID_EXCLUSION_TARGETS },
           mode: { type: 'string', enum: VALID_EXCLUSION_MODES },
           pattern: { type: 'string' },
+          ruleIds: { type: 'array', items: { type: 'string' } },
+          httpStatuses: { type: 'array', items: { type: 'string' } },
+          srcIps: { type: 'array', items: { type: 'string' } },
+          userAgent: { type: 'string' },
+          referer: { type: 'string' },
           note: { type: 'string' },
         },
         required: ['target', 'mode', 'pattern', 'note'],
@@ -74,6 +86,12 @@ const TRIAGE_RESPONSE_SCHEMA = {
 const DEFAULT_SYSTEM_PROMPT = [
   'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.',
   'Analisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.',
+  '',
+  'Skala Severity Wazuh Resmi (WAJIB dipatuhi dalam reasoning):',
+  '- Level 0–6: Low',
+  '- Level 7–11: Medium (contoh: Rule Level 10 adalah Medium, BUKAN High atau Critical)',
+  '- Level 12–14: High',
+  '- Level 15+: Critical',
   '',
   'Aturan Klasifikasi:',
   '1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.',
@@ -201,13 +219,31 @@ function extractSrcIp(rawAlert) {
 }
 
 function extractUserAgent(rawAlert) {
-  return String(
+  const direct = String(
     rawAlert?.data?.http_user_agent ||
     rawAlert?.data?.user_agent ||
     rawAlert?.data?.http?.user_agent ||
     rawAlert?.user_agent ||
     ''
   ).trim();
+  if (direct && direct !== '-') return direct;
+  const fullLog = String(rawAlert?.full_log || '');
+  const m = fullLog.match(/HTTP\/[12](?:\.\d)?"\s+[1-5]\d\d\s+\S+\s+"[^"]*"\s+"([^"]+)"/);
+  return m && m[1] && m[1] !== '-' ? m[1].trim() : '';
+}
+
+function extractReferer(rawAlert) {
+  const direct = String(
+    rawAlert?.data?.http_referer ||
+    rawAlert?.data?.referer ||
+    rawAlert?.data?.http?.referer ||
+    rawAlert?.referer ||
+    ''
+  ).trim();
+  if (direct && direct !== '-') return direct;
+  const fullLog = String(rawAlert?.full_log || '');
+  const m = fullLog.match(/HTTP\/[12](?:\.\d)?"\s+[1-5]\d\d\s+\S+\s+"([^"]+)"/);
+  return m && m[1] && m[1] !== '-' ? m[1].trim() : '';
 }
 
 function extractPathCandidates(rawAlert) {
@@ -255,6 +291,25 @@ function normalizePath(rawPath) {
     .slice(0, 140);
 }
 
+function normalizeStringList(val, maxItems = 12, maxItemLen = 64) {
+  const rawArr = Array.isArray(val)
+    ? val
+    : (typeof val === 'string' ? val.split(/[\s,;]+/) : []);
+  const out = [];
+  for (const item of rawArr) {
+    const s = String(item ?? '').trim().slice(0, maxItemLen);
+    if (s && !out.includes(s)) out.push(s);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function normalizeTenantScope(val) {
+  const s = String(val ?? '').trim().toLowerCase();
+  if (!s || s === '*' || s === 'all' || s === 'global') return '';
+  return s.slice(0, 80);
+}
+
 function sanitizeExclusionRule(raw, idx = 0) {
   const rawTarget = String(raw?.target || 'path').trim();
   const target = VALID_EXCLUSION_TARGETS.includes(rawTarget) ? rawTarget : 'path';
@@ -270,9 +325,15 @@ function sanitizeExclusionRule(raw, idx = 0) {
     : (inferredDefault ? 'default' : 'manual');
   return {
     id,
+    tenant: normalizeTenantScope(raw?.tenant),
     target,
     mode,
     pattern,
+    ruleIds: normalizeStringList(raw?.ruleIds ?? raw?.rule_ids, 10, 24),
+    httpStatuses: normalizeStringList(raw?.httpStatuses ?? raw?.http_statuses, 10, 8),
+    srcIps: normalizeStringList(raw?.srcIps ?? raw?.src_ips, 12, 64),
+    userAgent: String(raw?.userAgent ?? raw?.user_agent ?? '').trim().slice(0, 120),
+    referer: String(raw?.referer ?? '').trim().slice(0, 160),
     enabled: raw?.enabled !== false,
     source,
     createdAt: raw?.createdAt || null,
@@ -346,16 +407,128 @@ function commonPathPrefix(paths = []) {
   return segCount >= 2 && clean.length >= 6 ? clean : '';
 }
 
-function buildSpecificPathRule(normPath, exactPath, note, nowIso) {
+function isPrivateIp(ip) {
+  const s = String(ip || '').trim();
+  return /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|fc|fd|fe80)/i.test(s);
+}
+
+function extractSafeQueryLock(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  const qIdx = s.indexOf('?');
+  if (qIdx === -1) return { cleanPath: s, queryParamLock: '' };
+  const cleanPath = s.slice(0, qIdx).trim();
+  const queryStr = s.slice(qIdx + 1);
+  if (!/\/(?:webservice\/rest\/server\.php|lib\/ajax\/service(?:-nologin)?\.php|apicms)/i.test(cleanPath)) {
+    return { cleanPath, queryParamLock: '' };
+  }
+  const params = queryStr.split('&');
+  for (const p of params) {
+    const [k, v] = p.split('=');
+    if (!k || !v) continue;
+    const keyLow = k.toLowerCase();
+    if ((keyLow === 'wsfunction' || keyLow === 'info') && /^[a-z0-9_.-]{3,80}$/i.test(v)) {
+      return { cleanPath, queryParamLock: `${k}=${v}` };
+    }
+  }
+  return { cleanPath, queryParamLock: '' };
+}
+
+function deriveLocksForBucket(bucketRaws = [], cleanPath = '') {
+  const ruleSet = new Set();
+  const statusSet = new Set();
+  const ipSet = new Set();
+  const uaCounts = new Map();
+  const refHostSet = new Set();
+
+  for (const r of bucketRaws) {
+    const rid = String(r?.rule?.id || '').trim();
+    if (rid && !ATTACK_SIGNATURE_RULE_IDS.has(rid)) ruleSet.add(rid);
+    const st = extractHttpStatus(r);
+    if (st) statusSet.add(st);
+    const ip = extractSrcIp(r);
+    if (ip) ipSet.add(ip);
+    const ua = extractUserAgent(r);
+    if (ua) {
+      const tokenMatch = ua.match(/(MoodleMobile|HealthCheck|UptimeRobot|GuzzleHttp|okhttp|WordPress|Googlebot|Bingbot|curl|python-requests)/i);
+      const key = tokenMatch ? tokenMatch[1] : (ua.length <= 40 ? ua : '');
+      if (key) uaCounts.set(key, (uaCounts.get(key) || 0) + 1);
+    }
+    const ref = extractReferer(r);
+    if (ref) {
+      try {
+        refHostSet.add(new URL(ref).hostname.toLowerCase());
+      } catch {
+        const hm = ref.match(/^https?:\/\/([^/:?#]+)/i);
+        if (hm && hm[1]) refHostSet.add(hm[1].toLowerCase());
+      }
+    }
+  }
+
+  const ruleIds = [...ruleSet].slice(0, 5);
+  const httpStatuses = statusSet.size >= 1 && statusSet.size <= 3 ? [...statusSet] : [];
+
+  let userAgent = '';
+  if (uaCounts.size > 0 && bucketRaws.length > 0) {
+    const topUa = [...uaCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (topUa && topUa[1] >= Math.max(1, Math.ceil(bucketRaws.length * 0.8))) {
+      userAgent = topUa[0];
+    }
+  }
+
+  let srcIps = [];
+  if (ipSet.size === 1) {
+    const singleIp = [...ipSet][0];
+    if (isPrivateIp(singleIp) || /\/(?:api|apicms|webservice|webhook|sync|cron)/i.test(cleanPath)) {
+      srcIps = [singleIp];
+    }
+  }
+
+  let referer = '';
+  if (refHostSet.size === 1 && (statusSet.has('303') || /\/(?:edit\.php|quiz|cms)/i.test(cleanPath))) {
+    referer = [...refHostSet][0];
+  }
+
+  return { ruleIds, httpStatuses, srcIps, userAgent, referer };
+}
+
+function buildSpecificPathRule(normPath, exactPath, note, nowIso, extra = {}) {
   const np = String(normPath || '').trim();
   const hasParam = /\/:(?:id|uuid|hex)\b/.test(np);
+  const locks = extra.locks || {};
+  const tenant = normalizeTenantScope(extra.tenant);
+  const qLock = String(extra.queryParamLock || '').trim();
+
+  if (qLock && !hasParam) {
+    return {
+      tenant,
+      target: 'path',
+      mode: 'contains',
+      pattern: `${String(exactPath || np)}?${qLock}`.slice(0, 160),
+      ruleIds: locks.ruleIds || [],
+      httpStatuses: locks.httpStatuses || [],
+      srcIps: locks.srcIps || [],
+      userAgent: locks.userAgent || '',
+      referer: locks.referer || '',
+      enabled: true,
+      source: 'auto_ignore',
+      createdAt: nowIso,
+      note,
+    };
+  }
+
   if (hasParam) {
     const wildcardPattern = np.replace(/\/:(?:id|uuid|hex)\b/g, '/*').slice(0, 160);
     if (!isOverlyBroadPathPattern(wildcardPattern)) {
       return {
+        tenant,
         target: 'path',
         mode: 'wildcard',
         pattern: wildcardPattern,
+        ruleIds: locks.ruleIds || [],
+        httpStatuses: locks.httpStatuses || [],
+        srcIps: locks.srcIps || [],
+        userAgent: locks.userAgent || '',
+        referer: locks.referer || '',
         enabled: true,
         source: 'auto_ignore',
         createdAt: nowIso,
@@ -364,9 +537,15 @@ function buildSpecificPathRule(normPath, exactPath, note, nowIso) {
     }
   }
   return {
+    tenant,
     target: 'path',
     mode: 'contains',
     pattern: String(exactPath || np).slice(0, 140),
+    ruleIds: locks.ruleIds || [],
+    httpStatuses: locks.httpStatuses || [],
+    srcIps: locks.srcIps || [],
+    userAgent: locks.userAgent || '',
+    referer: locks.referer || '',
     enabled: true,
     source: 'auto_ignore',
     createdAt: nowIso,
@@ -374,52 +553,69 @@ function buildSpecificPathRule(normPath, exactPath, note, nowIso) {
   };
 }
 
-function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
+function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '', tenant = '') {
   const raws = (Array.isArray(alerts) ? alerts : [alerts])
     .map((a) => (a && a.raw_wazuh_alert ? a.raw_wazuh_alert : a))
     .filter((r) => r && typeof r === 'object');
   const firstDesc = String(raws[0]?.rule?.description || '').trim();
   const note = ('Auto-exclude: ' + String(fallbackTitle || firstDesc || 'Abaikan analis').trim()).slice(0, 120);
   const nowIso = new Date().toISOString();
+  const tenantSlug = normalizeTenantScope(tenant || raws[0]?.agent?.labels?.tenant);
 
-  // Priority 1: Non-trivial URL/request paths grouped per distinct normalized endpoint (uses * wildcard for dynamic segments)
+  // Priority 1: Non-trivial URL/request paths grouped per normalized endpoint (+ safe query/AND locks)
   const rawPaths = [];
   const normBuckets = new Map();
   for (const r of raws) {
     const p = extractPathCandidates(r)[0] || '';
-    const clean = p.split('?')[0].trim();
-    if (!clean || clean === '/' || clean.length < 2) continue;
-    rawPaths.push(clean);
-    const np = normalizePath(clean) || clean;
+    const { cleanPath, queryParamLock } = extractSafeQueryLock(p);
+    if (!cleanPath || cleanPath === '/' || cleanPath.length < 2) continue;
+    rawPaths.push(cleanPath);
+    const np = normalizePath(cleanPath) || cleanPath;
     if (!np || np === '/') continue;
-    let bucket = normBuckets.get(np);
+    const bKey = queryParamLock ? `${np}?${queryParamLock}` : np;
+    let bucket = normBuckets.get(bKey);
     if (!bucket) {
-      bucket = { normPath: np, count: 0, sampleExact: clean };
-      normBuckets.set(np, bucket);
+      bucket = { normPath: np, count: 0, sampleExact: cleanPath, queryParamLock, raws: [] };
+      normBuckets.set(bKey, bucket);
     }
     bucket.count++;
+    bucket.raws.push(r);
   }
 
   if (normBuckets.size > 0) {
     const MAX_AUTO_RULES = 8;
     const sorted = [...normBuckets.values()].sort((a, b) => b.count - a.count);
-    if (sorted.length <= MAX_AUTO_RULES) {
-      return sorted.map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso));
+    const chosen = sorted.length <= MAX_AUTO_RULES ? sorted : null;
+    if (chosen) {
+      return chosen.map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso, {
+        tenant: tenantSlug,
+        queryParamLock: b.queryParamLock,
+        locks: deriveLocksForBucket(b.raws, b.sampleExact),
+      }));
     }
     const sharedPrefix = commonPathPrefix(rawPaths);
     if (sharedPrefix && !isOverlyBroadPathPattern(sharedPrefix)) {
+      const locks = deriveLocksForBucket(raws, sharedPrefix);
       return [{
+        tenant: tenantSlug,
         target: 'path',
         mode: 'starts_with',
         pattern: sharedPrefix,
+        ...locks,
         enabled: true,
         source: 'auto_ignore',
         createdAt: nowIso,
         note,
       }];
     }
-    return sorted.slice(0, MAX_AUTO_RULES).map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso));
+    return sorted.slice(0, MAX_AUTO_RULES).map((b) => buildSpecificPathRule(b.normPath, b.sampleExact, note, nowIso, {
+      tenant: tenantSlug,
+      queryParamLock: b.queryParamLock,
+      locks: deriveLocksForBucket(b.raws, b.sampleExact),
+    }));
   }
+
+  const allLocks = deriveLocksForBucket(raws, '');
 
   // Priority 1B: Filename / syscheck targets when alert is file-centric rather than HTTP
   const fileNames = [];
@@ -433,9 +629,11 @@ function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
       const wildcarded = fn.replace(/\d{4,}/g, '*');
       const useWild = wildcarded !== fn && wildcarded.includes('*');
       return {
+        tenant: tenantSlug,
         target: 'filename',
         mode: useWild ? 'wildcard' : 'contains',
         pattern: (useWild ? wildcarded : fn).slice(0, 140),
+        ruleIds: allLocks.ruleIds,
         enabled: true,
         source: 'auto_ignore',
         createdAt: nowIso,
@@ -458,9 +656,11 @@ function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
     const common = longestCommonSubstring(cleanLogs.slice(0, 5), 12);
     if (common) {
       return [{
+        tenant: tenantSlug,
         target: 'full_log',
         mode: 'contains',
         pattern: common.slice(0, 100),
+        ...allLocks,
         enabled: true,
         source: 'auto_ignore',
         createdAt: nowIso,
@@ -469,9 +669,11 @@ function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
     }
   } else if (cleanLogs.length === 1) {
     return [{
+      tenant: tenantSlug,
       target: 'full_log',
       mode: 'contains',
       pattern: cleanLogs[0].slice(0, 90),
+      ...allLocks,
       enabled: true,
       source: 'auto_ignore',
       createdAt: nowIso,
@@ -483,9 +685,11 @@ function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
   const fallback = String(firstDesc || fallbackTitle || '').trim().slice(0, 100);
   if (!fallback) return [];
   return [{
+    tenant: tenantSlug,
     target: 'rule_description',
     mode: 'contains',
     pattern: fallback,
+    ...allLocks,
     enabled: true,
     source: 'auto_ignore',
     createdAt: nowIso,
@@ -493,8 +697,8 @@ function deriveExclusionRulesFromAlerts(alerts = [], fallbackTitle = '') {
   }];
 }
 
-function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '') {
-  return deriveExclusionRulesFromAlerts(alerts, fallbackTitle)[0] || null;
+function deriveExclusionRuleFromAlerts(alerts = [], fallbackTitle = '', tenant = '') {
+  return deriveExclusionRulesFromAlerts(alerts, fallbackTitle, tenant)[0] || null;
 }
 
 function compileWildcardRegex(pattern, target) {
@@ -502,7 +706,7 @@ function compileWildcardRegex(pattern, target) {
     .trim()
     .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '\u0000DBL\u0000')
-    .replace(/\*/g, (target === 'path' || target === 'filename') ? '[^/?#]+' : '.*')
+    .replace(/\*/g, (target === 'path' || target === 'filename') ? '[^/]*' : '.*')
     .replace(/\u0000DBL\u0000/g, '.*');
   const anchored = ['path', 'filename', 'rule_id', 'src_ip', 'agent_name'].includes(target);
   return new RegExp(anchored ? '^' + escaped + '$' : escaped, 'i');
@@ -535,7 +739,7 @@ function matchesRule(candidates, rule) {
     if (rule.mode === 'regex') {
       if (compiledRe && compiledRe.test(str)) return true;
     } else if (rule.mode === 'wildcard') {
-      if (rule.target === 'path' && !needle.includes('?')) {
+      if (rule.target === 'path' && !needle.includes('?') && !needle.includes('=')) {
         str = str.split('?')[0].trim();
       }
       if (compiledRe && compiledRe.test(str)) return true;
@@ -548,10 +752,22 @@ function matchesRule(candidates, rule) {
   return false;
 }
 
-function evaluateExclusions(rawAlert, rules) {
+function matchesTextFilter(value, filterExpr) {
+  const f = String(filterExpr || '').trim();
+  if (!f) return true;
+  const v = String(value || '');
+  if (!v) return false;
+  if (f.includes('*')) {
+    return compileWildcardRegex(f, 'full_log').test(v);
+  }
+  return v.toLowerCase().includes(f.toLowerCase());
+}
+
+function evaluateExclusions(rawAlert, rules, resolvedTenant = '') {
   const activeRules = Array.isArray(rules) ? rules.filter((r) => r && r.enabled && r.pattern) : [];
   if (!activeRules.length) return { excluded: false };
 
+  const alertTenant = normalizeTenantScope(resolvedTenant || rawAlert?.agent?.labels?.tenant);
   const byTarget = {};
   const getTargets = (target) => {
     if (byTarget[target]) return byTarget[target];
@@ -564,17 +780,21 @@ function evaluateExclusions(rawAlert, rules) {
       list = [rawAlert?.rule?.description].filter(Boolean);
     } else if (target === 'rule_id') {
       list = rawAlert?.rule?.id != null ? [String(rawAlert.rule.id)] : [];
+    } else if (target === 'http_status') {
+      list = [extractHttpStatus(rawAlert)].filter(Boolean);
     } else if (target === 'src_ip') {
       list = [extractSrcIp(rawAlert)].filter(Boolean);
     } else if (target === 'agent_name') {
       list = [rawAlert?.agent?.name].filter(Boolean);
     } else if (target === 'user_agent') {
       list = [extractUserAgent(rawAlert)].filter(Boolean);
+    } else if (target === 'referer') {
+      list = [extractReferer(rawAlert)].filter(Boolean);
     } else {
       list = [
         rawAlert?.full_log,
         rawAlert?.rule?.description,
-        rawAlert?.data?.http_user_agent,
+        extractUserAgent(rawAlert),
         rawAlert?.data?.url,
       ].filter(Boolean);
     }
@@ -583,14 +803,45 @@ function evaluateExclusions(rawAlert, rules) {
   };
 
   for (const rule of activeRules) {
+    // 1. Tenant isolation check (empty rule.tenant means Global)
+    const ruleTenant = normalizeTenantScope(rule.tenant);
+    if (ruleTenant && alertTenant !== ruleTenant) continue;
+
+    // 2. Primary target match
     const targets = getTargets(rule.target);
-    if (matchesRule(targets, rule)) {
-      return {
-        excluded: true,
-        ruleId: rule.id,
-        ruleLabel: rule.pattern,
-      };
+    if (!matchesRule(targets, rule)) continue;
+
+    // 3. Multi-condition AND locks
+    if (Array.isArray(rule.ruleIds) && rule.ruleIds.length) {
+      const alertRuleId = String(rawAlert?.rule?.id || '').trim();
+      if (!alertRuleId || !rule.ruleIds.includes(alertRuleId)) continue;
     }
+    if (Array.isArray(rule.httpStatuses) && rule.httpStatuses.length) {
+      const st = extractHttpStatus(rawAlert);
+      if (!st || !rule.httpStatuses.includes(st)) continue;
+    }
+    if (Array.isArray(rule.srcIps) && rule.srcIps.length) {
+      const ip = extractSrcIp(rawAlert);
+      if (!ip) continue;
+      const ipMatched = rule.srcIps.some((pat) => (
+        pat.includes('*')
+          ? compileWildcardRegex(pat, 'src_ip').test(ip)
+          : ip.toLowerCase() === pat.toLowerCase()
+      ));
+      if (!ipMatched) continue;
+    }
+    if (rule.userAgent && !matchesTextFilter(extractUserAgent(rawAlert), rule.userAgent)) {
+      continue;
+    }
+    if (rule.referer && !matchesTextFilter(extractReferer(rawAlert), rule.referer)) {
+      continue;
+    }
+
+    return {
+      excluded: true,
+      ruleId: rule.id,
+      ruleLabel: rule.pattern,
+    };
   }
   return { excluded: false };
 }
@@ -1293,6 +1544,7 @@ function createTriageEngine(options = {}) {
       tenant,
       rule_id: c.ruleId,
       rule_level: c.maxRuleLevel,
+      severity_label: severityLabel(c.maxRuleLevel),
       rule_description: c.ruleDesc,
       mitre: c.mitre,
       agent_names: c.agents.map((a) => a.name).slice(0, 8),
@@ -1306,6 +1558,7 @@ function createTriageEngine(options = {}) {
 
     const promptLines = [
       `Tenant target: "${tenant}". Semua kandidat di bawah HANYA milik tenant "${tenant}".`,
+      'Skala Severity Wazuh (WAJIB): Level 0-6 = Low, Level 7-11 = Medium (contoh: rule level 10 adalah Medium, BUKAN Critical/High), Level 12-14 = High, Level 15+ = Critical.',
       'Tugas: Klasifikasikan tiap candidate_id (TRUE_POSITIVE | NEEDS_REVIEW | FALSE_POSITIVE) dan berikan group_key semantik agar kampanye serangan sejenis (mis. scanning /.env lintas agent) bisa menyatu, sementara trafik legit (mis. /login.php, /mhs/nim) terpisah walau rule_id sama.',
       'Buat ai_reasoning ringkas (maksimal 1-2 kalimat singkat & padat) dan pastikan JSON tertutup lengkap.',
       'Format JSON WAJIB:',
@@ -1501,7 +1754,7 @@ function createTriageEngine(options = {}) {
         continue;
       }
 
-      const ex = evaluateExclusions(raw, config.exclusionRules);
+      const ex = evaluateExclusions(raw, config.exclusionRules, tenant);
       if (ex.excluded) {
         if (mutateExclusions) {
           state.excludedAlertMap[id] = { ruleLabel: ex.ruleLabel, at: new Date().toISOString() };
@@ -1922,7 +2175,7 @@ function createTriageEngine(options = {}) {
             : (grp.unanalyzed ? 'Needs Review - Unanalyzed' : 'Needs Review');
         statusLabel = 'Queued (' + verdictText + ')';
       } else {
-        const liveEx = evaluateExclusions(raw, config.exclusionRules);
+        const liveEx = evaluateExclusions(raw, config.exclusionRules, tenant);
         if (liveEx.excluded) {
           statusCode = 'excluded';
           statusLabel = 'Excluded (Matched Rule: ' + liveEx.ruleLabel + ')';
@@ -2196,17 +2449,27 @@ function createTriageEngine(options = {}) {
     };
   }
 
+  function exclusionDedupKey(r) {
+    return [
+      normalizeTenantScope(r.tenant),
+      r.target,
+      r.mode,
+      String(r.pattern || '').trim().toLowerCase(),
+      (r.ruleIds || []).slice().sort().join(','),
+      (r.httpStatuses || []).slice().sort().join(','),
+      (r.srcIps || []).slice().sort().join(','),
+      String(r.userAgent || '').trim().toLowerCase(),
+      String(r.referer || '').trim().toLowerCase(),
+    ].join('|');
+  }
+
   function upsertExclusionRule(ruleInput) {
     const candidate = sanitizeExclusionRule(ruleInput, config.exclusionRules.length);
     if (!candidate || !candidate.pattern) {
       throw Object.assign(new Error('Pola exclusion rule wajib diisi.'), { status: 400 });
     }
-    const normPat = candidate.pattern.toLowerCase();
-    const existing = config.exclusionRules.find((r) =>
-      r.target === candidate.target &&
-      r.mode === candidate.mode &&
-      String(r.pattern || '').trim().toLowerCase() === normPat
-    );
+    const cKey = exclusionDedupKey(candidate);
+    const existing = config.exclusionRules.find((r) => exclusionDedupKey(r) === cKey);
     if (existing) {
       let dirty = false;
       if (!existing.enabled) {
@@ -2241,17 +2504,25 @@ function createTriageEngine(options = {}) {
     let candidate = null;
     if (payload.rawAlert || (Array.isArray(payload.alerts) && payload.alerts.length)) {
       const list = Array.isArray(payload.alerts) && payload.alerts.length ? payload.alerts : [payload.rawAlert];
-      candidate = deriveExclusionRuleFromAlerts(list, payload.fallbackTitle || '');
+      const firstRaw = list[0]?.raw_wazuh_alert || list[0] || {};
+      const resolvedT = payload.tenant || resolveTenant(firstRaw, config.wazuh.tenantMapping, getKnownTenants());
+      candidate = deriveExclusionRuleFromAlerts(list, payload.fallbackTitle || '', resolvedT);
       if (!candidate) {
         throw Object.assign(new Error('Tidak dapat mendeteksi pola exclusion otomatis dari alert tersebut.'), { status: 400 });
       }
     } else {
       candidate = {
+        tenant: payload.tenant,
         target: payload.target,
         mode: payload.mode,
         pattern: payload.pattern,
+        ruleIds: payload.ruleIds,
+        httpStatuses: payload.httpStatuses,
+        srcIps: payload.srcIps,
+        userAgent: payload.userAgent,
+        referer: payload.referer,
         enabled: payload.enabled !== false,
-        source: payload.source === 'auto_ignore' ? 'auto_ignore' : 'manual',
+        source: ['auto_ignore', 'ai_suggest'].includes(payload.source) ? payload.source : 'manual',
         createdAt: new Date().toISOString(),
         note: payload.note || '',
       };
@@ -2275,9 +2546,15 @@ function createTriageEngine(options = {}) {
     const cur = config.exclusionRules[idx];
     const next = sanitizeExclusionRule({
       id: cur.id,
+      tenant: patch.tenant !== undefined ? patch.tenant : cur.tenant,
       target: patch.target !== undefined ? patch.target : cur.target,
       mode: patch.mode !== undefined ? patch.mode : cur.mode,
       pattern: patch.pattern !== undefined ? patch.pattern : cur.pattern,
+      ruleIds: patch.ruleIds !== undefined ? patch.ruleIds : cur.ruleIds,
+      httpStatuses: patch.httpStatuses !== undefined ? patch.httpStatuses : cur.httpStatuses,
+      srcIps: patch.srcIps !== undefined ? patch.srcIps : cur.srcIps,
+      userAgent: patch.userAgent !== undefined ? patch.userAgent : cur.userAgent,
+      referer: patch.referer !== undefined ? patch.referer : cur.referer,
       enabled: patch.enabled !== undefined ? patch.enabled : cur.enabled,
       source: cur.source,
       createdAt: cur.createdAt,
@@ -2362,11 +2639,11 @@ function createTriageEngine(options = {}) {
       throw Object.assign(new Error('Minimal 1 rule exclude dengan pola valid harus dipilih.'), { status: 400 });
     }
 
-    const applyForGroupOrAlerts = (alerts, title) => {
+    const applyForGroupOrAlerts = (alerts, title, tenant = '') => {
       if (explicitRules && explicitRules.length) {
         return applyRulesList(alerts, explicitRules);
       }
-      const derivedList = deriveExclusionRulesFromAlerts(alerts, title);
+      const derivedList = deriveExclusionRulesFromAlerts(alerts, title, tenant);
       if (!derivedList.length) return [];
       return applyRulesList(alerts, derivedList);
     };
@@ -2380,7 +2657,7 @@ function createTriageEngine(options = {}) {
       nextList = res.nextList;
       groupRemoved = res.groupRemoved;
       if (groupRemoved) removedGroups = 1;
-      const applied = applyForGroupOrAlerts(res.removed, grp.incident_title || '');
+      const applied = applyForGroupOrAlerts(res.removed, grp.incident_title || '', grp.tenant_mapped || '');
       if (!applied.length) {
         throw Object.assign(new Error('Tidak dapat mendeteksi pola exclusion otomatis dari alert terpilih.'), { status: 400 });
       }
@@ -2393,7 +2670,7 @@ function createTriageEngine(options = {}) {
       removedGroups = toRemove.length;
       groupRemoved = true;
       for (const grp of toRemove) {
-        applyForGroupOrAlerts(grp.alerts || [], grp.incident_title || '');
+        applyForGroupOrAlerts(grp.alerts || [], grp.incident_title || '', grp.tenant_mapped || '');
       }
     } else {
       throw Object.assign(new Error('Pilih grup atau alert yang akan diabaikan & di-exclude.'), { status: 400 });
@@ -2411,12 +2688,21 @@ function createTriageEngine(options = {}) {
 
   function resolveAlertsForExclusionRequest(opts = {}) {
     const source = String(opts.source || 'queue').trim().toLowerCase();
+    const explicitTenant = normalizeTenantScope(opts.tenant || '');
     if (Array.isArray(opts.rawAlerts) && opts.rawAlerts.length) {
       const alerts = opts.rawAlerts.map((a, idx) => ({
         alert_id: String(a?.alert_id || a?._id || `raw_${idx}`),
         raw_wazuh_alert: a?.raw_wazuh_alert || a || {},
       }));
-      return { alerts, fallbackTitle: String(opts.title || alerts[0]?.raw_wazuh_alert?.rule?.description || '').trim() };
+      const firstRaw = alerts[0]?.raw_wazuh_alert || {};
+      const resolvedTenant = explicitTenant || normalizeTenantScope(
+        resolveTenant(firstRaw, config.wazuh.tenantMapping, getKnownTenants()),
+      );
+      return {
+        alerts,
+        tenant: resolvedTenant,
+        fallbackTitle: String(opts.title || firstRaw?.rule?.description || '').trim(),
+      };
     }
     const list = source === 'batch24h' ? batch24h.groups : state.groups;
     const groupId = String(opts.groupId || '').trim();
@@ -2431,22 +2717,33 @@ function createTriageEngine(options = {}) {
       const idSet = new Set(alertIds);
       const picked = (grp.alerts || []).filter((a) => idSet.has(a.alert_id));
       if (!picked.length) throw Object.assign(new Error('Alert yang dipilih tidak ditemukan di grup ini.'), { status: 404 });
-      return { alerts: picked, fallbackTitle: grp.incident_title || '' };
+      return {
+        alerts: picked,
+        tenant: explicitTenant || normalizeTenantScope(grp.tenant_mapped || ''),
+        fallbackTitle: grp.incident_title || '',
+      };
     }
     if (groupIds.length > 0) {
       const matched = list.filter((g) => groupIds.includes(g.group_id));
       if (!matched.length) throw Object.assign(new Error('Grup triage tidak ditemukan.'), { status: 404 });
       const combined = matched.flatMap((g) => g.alerts || []);
-      return { alerts: combined, fallbackTitle: matched[0]?.incident_title || '' };
+      const tenants = new Set(matched.map((g) => normalizeTenantScope(g.tenant_mapped || '')).filter(Boolean));
+      const inferredTenant = explicitTenant || (tenants.size === 1 ? [...tenants][0] : '');
+      return {
+        alerts: combined,
+        tenant: inferredTenant,
+        fallbackTitle: matched[0]?.incident_title || '',
+      };
     }
     throw Object.assign(new Error('groupId, groupIds, atau rawAlerts wajib diisi.'), { status: 400 });
   }
 
   function suggestExclusionRules(opts = {}) {
-    const { alerts, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
-    const rules = deriveExclusionRulesFromAlerts(alerts, fallbackTitle);
+    const { alerts, tenant, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
+    const rules = deriveExclusionRulesFromAlerts(alerts, fallbackTitle, tenant);
     return {
       ok: true,
+      tenant,
       title: fallbackTitle,
       alertCount: alerts.length,
       rules,
@@ -2454,7 +2751,7 @@ function createTriageEngine(options = {}) {
   }
 
   async function aiSuggestExclusionRules(opts = {}) {
-    const { alerts, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
+    const { alerts, tenant, fallbackTitle } = resolveAlertsForExclusionRequest(opts);
     const o = config.ollama || {};
     const baseUrl = String(o.baseUrl || '').trim().replace(/\/+$/, '');
     if (!baseUrl) {
@@ -2465,17 +2762,23 @@ function createTriageEngine(options = {}) {
     const compactSamples = [];
     for (const al of alerts) {
       const raw = al?.raw_wazuh_alert || {};
+      const sampleTenant = tenant || normalizeTenantScope(
+        resolveTenant(raw, config.wazuh.tenantMapping, getKnownTenants()),
+      );
       const sample = {
+        tenant: sampleTenant,
         path: extractPathCandidates(raw)[0] || '',
         filename: extractFilenameCandidates(raw)[0] || '',
         rule_id: String(raw.rule?.id || ''),
         rule_description: String(raw.rule?.description || ''),
+        http_status: extractHttpStatus(raw),
         agent_name: String(raw.agent?.name || ''),
         src_ip: extractSrcIp(raw),
         user_agent: extractUserAgent(raw).slice(0, 100),
+        referer: extractReferer(raw).slice(0, 120),
         full_log: String(raw.full_log || '').slice(0, 220),
       };
-      const fp = `${sample.rule_id}|${normalizePath(sample.path)}|${sample.filename}|${sample.full_log.slice(0, 60)}`;
+      const fp = `${sample.tenant}|${sample.rule_id}|${sample.http_status}|${normalizePath(sample.path)}|${sample.filename}|${sample.full_log.slice(0, 60)}`;
       if (seenSample.has(fp)) continue;
       seenSample.add(fp);
       compactSamples.push(sample);
@@ -2483,22 +2786,28 @@ function createTriageEngine(options = {}) {
     }
 
     const sysPrompt = [
-      'Anda adalah Analis SOC Senior yang bertugas merancang aturan Exclusion Whitelist Wazuh yang presisi dan aman agar trafik jinak (False Positive) tersaring sebelum ke AI, tanpa menelan trafik berbahaya.',
-      'Target yang tersedia:',
-      '- path: URL / Request path',
+      'Anda adalah Analis SOC Senior yang bertugas merancang aturan Exclusion Whitelist Wazuh yang presisi dengan Multi-Condition Locking (AND logic) agar trafik jinak (False Positive) tersaring sebelum ke AI, TANPA membuka blind spot terhadap eksploitasi.',
+      'Target utama yang tersedia:',
+      '- path: URL / Request path (sertakan query parameter aman jika relevan, mis. *wsfunction=core_course_view_course*)',
       '- filename: nama file atau path file (mis. syscheck / laravel.log / *.tmp)',
       '- rule_description: teks deskripsi rule Wazuh',
       '- rule_id: ID rule Wazuh (mis. 31151)',
-      '- src_ip: IP sumber internal/scanner tepercaya',
+      '- http_status: kode status HTTP (mis. 200, 303, 419)',
+      '- src_ip: IP sumber internal/gateway tepercaya',
       '- agent_name: nama host/agent tertentu',
       '- user_agent: string HTTP User-Agent',
+      '- referer: URL Referer HTTP',
       '- full_log: substring / pola pada full_log',
-      'Mode pencocokan yang tersedia: wildcard (gunakan * untuk ID/NIM/hash/timestamp dinamis, mis. /service/mhs/*/ip-kemarin), contains, starts_with, regex.',
-      'LARANGAN KERAS: JANGAN buat pola terlalu umum seperti "/", "/*", "/service/", "/service/*", atau "/api/" yang menyapu satu root aplikasi.',
-      'Keluarkan JSON valid sesuai schema dengan daftar rules minimal namun akurat dan reasoning singkat dalam Bahasa Indonesia.',
+      'Aturan KEAMANAN PENGUNCIAN WAJIB:',
+      '1. Kunci `tenant` ke tenant asal insiden (jangan kosong/global kecuali aturan memang lintas tenant).',
+      '2. Kunci `ruleIds` HANYA ke rule berbasis frekuensi (mis. 31151, 31153, 31154). DILARANG KERAS mengecualikan rule signature serangan (31103 SQLi, 31104 Path Traversal, 31105 XSS, 31106 Command Injection, 31109, 31110).',
+      '3. Untuk path sensitif seperti /cms/login, /webservice/rest/server.php, /lib/ajax/service*, /apicms*, atau /mod/quiz/edit.php, WAJIB isi syarat pengunci AND (`httpStatuses`, `srcIps` gateway internal, `userAgent` mis. MoodleMobile, atau `referer` domain internal) dan gunakan * untuk ID/NIM/timestamp dinamis.',
+      '4. LARANGAN KERAS: JANGAN buat pola terlalu umum seperti "/", "/*", "/service/", "/service/*", atau "/api/" tanpa syarat pengunci.',
+      'Mode pencocokan: wildcard (pakai *), contains, starts_with, regex. Keluarkan JSON valid sesuai schema dengan reasoning singkat dalam Bahasa Indonesia.',
     ].join('\n');
 
     const userPrompt = [
+      `Tenant target: ${tenant || 'global'}`,
       `Judul insiden: ${fallbackTitle || '—'}`,
       `Total alert: ${alerts.length}`,
       'Sampel alert unik:',
@@ -2535,10 +2844,15 @@ function createTriageEngine(options = {}) {
     const cleaned = [];
     const seenKeys = new Set();
     for (let i = 0; i < rawRules.length; i++) {
-      const san = sanitizeExclusionRule({ ...rawRules[i], enabled: true, source: 'ai_suggest' }, i);
+      const san = sanitizeExclusionRule({
+        ...rawRules[i],
+        tenant: rawRules[i]?.tenant || tenant,
+        enabled: true,
+        source: 'ai_suggest',
+      }, i);
       if (!san || !san.pattern) continue;
       if (san.target === 'path' && isOverlyBroadPathPattern(san.pattern)) continue;
-      const dedupKey = `${san.target}|${san.mode}|${san.pattern.toLowerCase()}`;
+      const dedupKey = exclusionDedupKey(san);
       if (seenKeys.has(dedupKey)) continue;
       seenKeys.add(dedupKey);
       cleaned.push(san);
@@ -2546,8 +2860,9 @@ function createTriageEngine(options = {}) {
 
     return {
       ok: true,
+      tenant,
       reasoning: String(parsed?.reasoning || 'Saran exclusion dihasilkan oleh AI berdasarkan pola sampel alert.').trim(),
-      rules: cleaned.length ? cleaned : deriveExclusionRulesFromAlerts(alerts, fallbackTitle),
+      rules: cleaned.length ? cleaned : deriveExclusionRulesFromAlerts(alerts, fallbackTitle, tenant),
     };
   }
 

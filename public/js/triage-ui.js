@@ -74,6 +74,7 @@
     liveFieldsOpen: false,
     exclusions: [],
     exFilterMode: 'all',
+    exFilterTenant: 'all',
     exSearch: '',
     exEditingId: null,
     excludePreviewCtx: null,
@@ -113,9 +114,11 @@
     { value: 'filename', label: 'Nama File' },
     { value: 'rule_description', label: 'Rule Description' },
     { value: 'rule_id', label: 'Rule ID' },
+    { value: 'http_status', label: 'HTTP Status' },
     { value: 'src_ip', label: 'Source IP' },
     { value: 'agent_name', label: 'Agent Name' },
     { value: 'user_agent', label: 'User-Agent' },
+    { value: 'referer', label: 'Referer' },
     { value: 'full_log', label: 'Full Log' },
   ];
   const EXCLUSION_MODE_OPTIONS = [
@@ -129,6 +132,48 @@
   const buildSelectOptions = (list, selected) => list
     .map((o) => `<option value="${B.esc(o.value)}" ${selected === o.value ? 'selected' : ''}>${B.esc(o.label)}</option>`)
     .join('');
+
+  const splitCsvInput = (str) => String(str || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const formatCsvValue = (arr) => (Array.isArray(arr) ? arr.filter(Boolean).join(', ') : '');
+
+  function getKnownTenantOptions(extraRules = []) {
+    const set = new Set();
+    const mappings = triageState.config?.wazuh?.tenantMapping || [];
+    for (const m of mappings) {
+      if (m?.tenant) set.add(String(m.tenant).trim());
+    }
+    for (const grp of [...(triageState.queue?.snapshot?.groups || []), ...(triageState.batch24h?.snapshot?.groups || [])]) {
+      if (grp?.tenant_mapped) set.add(String(grp.tenant_mapped).trim());
+    }
+    for (const r of extraRules) {
+      if (r?.tenant) set.add(String(r.tenant).trim());
+    }
+    return [...set].filter(Boolean).sort();
+  }
+
+  function buildLockChipsHtml(rule) {
+    const chips = [];
+    if (Array.isArray(rule.ruleIds) && rule.ruleIds.length) {
+      chips.push(`<span class="chip">rule: ${B.esc(rule.ruleIds.join(','))}</span>`);
+    }
+    if (Array.isArray(rule.httpStatuses) && rule.httpStatuses.length) {
+      chips.push(`<span class="chip">http: ${B.esc(rule.httpStatuses.join(','))}</span>`);
+    }
+    if (Array.isArray(rule.srcIps) && rule.srcIps.length) {
+      chips.push(`<span class="chip">ip: ${B.esc(rule.srcIps.join(','))}</span>`);
+    }
+    if (rule.userAgent) {
+      chips.push(`<span class="chip">ua: ${B.esc(rule.userAgent)}</span>`);
+    }
+    if (rule.referer) {
+      chips.push(`<span class="chip">ref: ${B.esc(rule.referer)}</span>`);
+    }
+    return chips.length ? `<div class="wzh-ex-lock-chips">${chips.join('')}</div>` : '';
+  }
 
   function wireDoubleConfirm(btnEl, confirmLabel, onConfirm) {
     if (!btnEl) return;
@@ -592,7 +637,26 @@
     syncExclusionBadge(allRules.length);
     if (pillEl) pillEl.textContent = `${enabledCount} Aktif / ${allRules.length} Total Rule`;
 
+    const knownTenants = getKnownTenantOptions(allRules);
+    const dlEl = $('#ex-tenant-list');
+    if (dlEl) {
+      dlEl.innerHTML = knownTenants.map((t) => `<option value="${B.esc(t)}"></option>`).join('');
+    }
+    const tenantSel = $('#ex-filter-tenant');
+    if (tenantSel) {
+      const curTenant = triageState.exFilterTenant || tenantSel.value || 'all';
+      tenantSel.innerHTML = '<option value="all">Semua Tenant</option><option value="__global__">Global (Semua Tenant)</option>'
+        + knownTenants.map((t) => `<option value="${B.esc(t)}">${B.esc(t)}</option>`).join('');
+      if (['all', '__global__', ...knownTenants].includes(curTenant)) {
+        tenantSel.value = curTenant;
+      } else {
+        tenantSel.value = 'all';
+        triageState.exFilterTenant = 'all';
+      }
+    }
+
     const modeFilter = $('#ex-filter-mode')?.value || triageState.exFilterMode || 'all';
+    const tenantFilter = $('#ex-filter-tenant')?.value || triageState.exFilterTenant || 'all';
     const q = ($('#ex-search')?.value || triageState.exSearch || '').trim().toLowerCase();
 
     const filtered = allRules.filter((r) => {
@@ -600,8 +664,11 @@
       if (modeFilter === 'disabled' && r.enabled !== false) return false;
       if (modeFilter === 'auto_ignore' && r.source !== 'auto_ignore') return false;
       if (modeFilter === 'manual' && r.source === 'auto_ignore') return false;
+      const ruleTenant = String(r.tenant || '').trim();
+      if (tenantFilter === '__global__' && ruleTenant !== '') return false;
+      if (tenantFilter !== 'all' && tenantFilter !== '__global__' && ruleTenant !== tenantFilter) return false;
       if (q) {
-        const hay = `${r.target} ${r.mode} ${r.pattern} ${r.note || ''} ${r.source || ''}`.toLowerCase();
+        const hay = `${ruleTenant || 'global'} ${r.target} ${r.mode} ${r.pattern} ${(r.ruleIds || []).join(' ')} ${(r.httpStatuses || []).join(' ')} ${(r.srcIps || []).join(' ')} ${r.userAgent || ''} ${r.referer || ''} ${r.note || ''} ${r.source || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -624,13 +691,26 @@
           : rule.source === 'default'
             ? '<span class="chip">Default</span>'
             : '<span class="chip mode-reporting">Manual</span>';
+      const tenantBadge = rule.tenant
+        ? `<span class="chip mode-reporting">${B.esc(rule.tenant)}</span>`
+        : '<span class="chip">Global</span>';
 
       if (isEditing) {
         tr.innerHTML = `
           <td><input type="checkbox" class="ex-edit-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Aktifkan aturan" /></td>
+          <td><input type="text" class="ex-edit-tenant" list="ex-tenant-list" value="${B.esc(rule.tenant || '')}" placeholder="Global" spellcheck="false" /></td>
           <td><select class="ex-edit-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target)}</select></td>
           <td><select class="ex-edit-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode)}</select></td>
-          <td><input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" spellcheck="false" /></td>
+          <td>
+            <input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" spellcheck="false" />
+            <div class="wzh-ex-inline-edits">
+              <input type="text" class="ex-edit-rule-ids mono" value="${B.esc(formatCsvValue(rule.ruleIds))}" placeholder="Rule IDs (AND)" spellcheck="false" />
+              <input type="text" class="ex-edit-statuses mono" value="${B.esc(formatCsvValue(rule.httpStatuses))}" placeholder="HTTP Status (AND)" spellcheck="false" />
+              <input type="text" class="ex-edit-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="Source IP (AND)" spellcheck="false" />
+              <input type="text" class="ex-edit-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="User-Agent (AND)" spellcheck="false" />
+              <input type="text" class="ex-edit-referer mono" value="${B.esc(rule.referer || '')}" placeholder="Referer (AND)" spellcheck="false" />
+            </div>
+          </td>
           <td><input type="text" class="ex-edit-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
           <td>
             <div class="wzh-row-btn-group">
@@ -650,9 +730,15 @@
               method: 'PATCH',
               body: JSON.stringify({
                 enabled: Boolean($('.ex-edit-enabled', tr)?.checked),
+                tenant: ($('.ex-edit-tenant', tr)?.value || '').trim(),
                 target: $('.ex-edit-target', tr)?.value,
                 mode: $('.ex-edit-mode', tr)?.value,
                 pattern,
+                ruleIds: splitCsvInput($('.ex-edit-rule-ids', tr)?.value),
+                httpStatuses: splitCsvInput($('.ex-edit-statuses', tr)?.value),
+                srcIps: splitCsvInput($('.ex-edit-src-ips', tr)?.value),
+                userAgent: ($('.ex-edit-ua', tr)?.value || '').trim(),
+                referer: ($('.ex-edit-referer', tr)?.value || '').trim(),
                 note: ($('.ex-edit-note', tr)?.value || '').trim(),
               }),
             });
@@ -674,9 +760,13 @@
       } else {
         tr.innerHTML = `
           <td><input type="checkbox" class="act-ex-toggle" ${rule.enabled !== false ? 'checked' : ''} aria-label="Toggle rule ${B.esc(rule.pattern)}" /></td>
+          <td>${tenantBadge}</td>
           <td><span class="chip">${B.esc(getTargetLabel(rule.target))}</span></td>
           <td><span class="mono">${B.esc(getModeLabel(rule.mode))}</span></td>
-          <td class="mono">${B.esc(rule.pattern)}</td>
+          <td>
+            <div class="mono">${B.esc(rule.pattern)}</div>
+            ${buildLockChipsHtml(rule)}
+          </td>
           <td>
             <div class="wzh-ex-note-cell">
               ${sourceBadge}
@@ -1171,40 +1261,94 @@
   }
 
   function renderExcludePreviewRows(rules = []) {
-    const tbody = $('#ex-modal-tbody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
+    const listEl = $('#ex-modal-list');
+    if (!listEl) return;
+    const dlEl = $('#ex-tenant-list');
+    if (dlEl) {
+      dlEl.innerHTML = getKnownTenantOptions(rules).map((t) => `<option value="${B.esc(t)}"></option>`).join('');
+    }
+    listEl.innerHTML = '';
     for (const rule of rules) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><input type="checkbox" class="exm-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Gunakan rule ini" /></td>
-        <td><select class="exm-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target || 'path')}</select></td>
-        <td><select class="exm-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode || 'wildcard')}</select></td>
-        <td><input type="text" class="exm-pattern mono" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin" spellcheck="false" /></td>
-        <td><input type="text" class="exm-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
-        <td><button type="button" class="btn danger btn-xs exm-del">Hapus</button></td>
+      const card = document.createElement('div');
+      card.className = 'wzh-ex-card-row';
+      card.dataset.source = rule.source || 'auto_ignore';
+      card.innerHTML = `
+        <div class="wzh-ex-card-top">
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Pakai</span>
+            <input type="checkbox" class="exm-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Gunakan rule ini" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Tenant</span>
+            <input type="text" class="exm-tenant mono" list="ex-tenant-list" value="${B.esc(rule.tenant || '')}" placeholder="Global" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Target</span>
+            <select class="exm-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target || 'path')}</select>
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Mode</span>
+            <select class="exm-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode || 'wildcard')}</select>
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Pola Utama</span>
+            <input type="text" class="exm-pattern mono" value="${B.esc(rule.pattern || '')}" placeholder="/service/mhs/*/ip-kemarin" spellcheck="false" />
+          </label>
+          <button type="button" class="btn danger btn-xs exm-del">Hapus</button>
+        </div>
+        <div class="wzh-ex-card-locks">
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Kunci Rule ID (AND)</span>
+            <input type="text" class="exm-rule-ids mono" value="${B.esc(formatCsvValue(rule.ruleIds))}" placeholder="mis. 31153, 31154" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Kunci HTTP Status (AND)</span>
+            <input type="text" class="exm-statuses mono" value="${B.esc(formatCsvValue(rule.httpStatuses))}" placeholder="mis. 200, 303, 419" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Kunci Source IP (AND)</span>
+            <input type="text" class="exm-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="mis. 123.253.78.156" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Kunci User-Agent (AND)</span>
+            <input type="text" class="exm-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="mis. MoodleMobile" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Kunci Referer (AND)</span>
+            <input type="text" class="exm-referer mono" value="${B.esc(rule.referer || '')}" placeholder="mis. indigoes.ikmi.ac.id" spellcheck="false" />
+          </label>
+          <label class="wzh-ex-lock-field">
+            <span class="field-label">Keterangan</span>
+            <input type="text" class="exm-note" value="${B.esc(rule.note || '')}" placeholder="Alasan / konteks SOC" />
+          </label>
+        </div>
       `;
-      tr.dataset.source = rule.source || 'auto_ignore';
-      $('.exm-del', tr)?.addEventListener('click', () => tr.remove());
-      tbody.appendChild(tr);
+      $('.exm-del', card)?.addEventListener('click', () => card.remove());
+      listEl.appendChild(card);
     }
   }
 
-  function collectExcludePreviewRows() {
-    const tbody = $('#ex-modal-tbody');
-    if (!tbody) return [];
+  function collectExcludePreviewRows(includeDisabled = false) {
+    const listEl = $('#ex-modal-list');
+    if (!listEl) return [];
     const out = [];
-    tbody.querySelectorAll('tr').forEach((tr) => {
-      const enabled = Boolean($('.exm-enabled', tr)?.checked);
-      const pattern = ($('.exm-pattern', tr)?.value || '').trim();
-      if (!enabled || !pattern) return;
+    listEl.querySelectorAll('.wzh-ex-card-row').forEach((card) => {
+      const enabled = Boolean($('.exm-enabled', card)?.checked);
+      const pattern = ($('.exm-pattern', card)?.value || '').trim();
+      if (!includeDisabled && (!enabled || !pattern)) return;
       out.push({
-        enabled: true,
-        target: $('.exm-target', tr)?.value || 'path',
-        mode: $('.exm-mode', tr)?.value || 'wildcard',
+        enabled,
+        tenant: ($('.exm-tenant', card)?.value || '').trim(),
+        target: $('.exm-target', card)?.value || 'path',
+        mode: $('.exm-mode', card)?.value || 'wildcard',
         pattern,
-        source: tr.dataset.source || 'auto_ignore',
-        note: ($('.exm-note', tr)?.value || '').trim(),
+        ruleIds: splitCsvInput($('.exm-rule-ids', card)?.value),
+        httpStatuses: splitCsvInput($('.exm-statuses', card)?.value),
+        srcIps: splitCsvInput($('.exm-src-ips', card)?.value),
+        userAgent: ($('.exm-ua', card)?.value || '').trim(),
+        referer: ($('.exm-referer', card)?.value || '').trim(),
+        source: card.dataset.source || 'auto_ignore',
+        note: ($('.exm-note', card)?.value || '').trim(),
       });
     });
     return out;
@@ -1223,7 +1367,7 @@
     const msgEl = $('#ex-modal-ai-msg');
     showInlineStatus(msgEl, true, '');
     if ($('#ex-modal-subtitle')) {
-      $('#ex-modal-subtitle').textContent = ctx.subtitle || 'Tinjau pola yang akan dijadikan rule exclude. Ubah manual atau klik AI Analisis Exclude.';
+      $('#ex-modal-subtitle').textContent = ctx.subtitle || 'Tinjau tenant, pola utama, dan syarat pengunci AND sebelum menyimpan.';
     }
     if ($('#btn-ex-modal-confirm')) {
       $('#btn-ex-modal-confirm').textContent = ctx.source === 'live' ? 'Simpan Rule Exclude' : 'Simpan Rule & Abaikan';
@@ -1236,6 +1380,7 @@
         method: 'POST',
         body: JSON.stringify({
           source: ctx.source,
+          tenant: ctx.tenant || '',
           groupId: ctx.groupId,
           groupIds: ctx.groupIds,
           alertIds: ctx.alertIds,
@@ -1243,10 +1388,11 @@
           title: ctx.title,
         }),
       });
+      if (ctx && !ctx.tenant && res.tenant) ctx.tenant = res.tenant;
       renderExcludePreviewRows(res.rules || []);
     } catch (err) {
       showInlineStatus(msgEl, false, err.message);
-      renderExcludePreviewRows([{ enabled: true, target: 'path', mode: 'wildcard', pattern: '', note: '', source: 'manual' }]);
+      renderExcludePreviewRows([{ enabled: true, tenant: ctx.tenant || '', target: 'path', mode: 'wildcard', pattern: '', note: '', source: 'manual' }]);
     }
   }
 
@@ -1525,6 +1671,7 @@
         openExcludePreviewModal({
           source: insp.source,
           isBatch24h,
+          tenant: row.tenant && row.tenant !== '—' ? row.tenant : (insp.tenant || ''),
           groupId: insp.groupId,
           alertIds: [row.alert_id],
           title: row.rule_description || insp.title,
@@ -1650,6 +1797,7 @@
         openExcludePreviewModal({
           source: isBatch24h ? 'batch24h' : 'queue',
           isBatch24h,
+          tenant: g.tenant_mapped || '',
           groupIds: [g.group_id],
           title: g.incident_title || 'Security Incident',
           subtitle: `Pratinjau rule exclude untuk grup "${g.incident_title || g.group_id}" (${g.alert_count || g.alerts?.length || 0} alert).`,
@@ -2017,6 +2165,7 @@
       $('.act-live-doc-exclude', expTr)?.addEventListener('click', () => {
         openExcludePreviewModal({
           source: 'live',
+          tenant: it.tenant && it.tenant !== '—' ? it.tenant : '',
           rawAlerts: [{ alert_id: it.alert_id, raw_wazuh_alert: it.raw_wazuh_alert }],
           title: it.rule_description || 'Live Wazuh Alert',
           subtitle: 'Pratinjau rule exclude dari alert Live Wazuh (dapat diedit manual atau analisis AI).',
@@ -2267,7 +2416,7 @@
     });
     $('#btn-reset-prompt')?.addEventListener('click', () => {
       if ($('#trg-system-prompt')) {
-        $('#trg-system-prompt').value = 'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.\nAnalisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.\n\nAturan Klasifikasi:\n1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.\n2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).\n3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /mhs/nim, kesalahan input user biasa, atau crawler/healthcheck internal).\n\nAturan Pengelompokan:\n- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.\n- Gabungkan kandidat yang merupakan kampanye serangan yang sama ke dalam satu insiden walaupun menyasar beberapa agent berbeda di dalam tenant ini.\nKeluarkan output HANYA dalam format JSON valid sesuai skema yang diminta.';
+        $('#trg-system-prompt').value = 'Anda adalah Analis SOC L1 senior yang bertugas melakukan pre-triage alert Wazuh (severity Medium hingga Critical, level >= 7) secara micro-batch untuk SATU tenant tertentu.\nAnalisis konteks log secara mendalam (URL/URI, payload, HTTP status, User-Agent, source IP, dan sampel full_log) — JANGAN hanya bergantung pada rule.id atau rule.description.\n\nSkala Severity Wazuh Resmi (WAJIB dipatuhi dalam reasoning):\n- Level 0–6: Low\n- Level 7–11: Medium (contoh: Rule Level 10 adalah Medium, BUKAN High atau Critical)\n- Level 12–14: High\n- Level 15+: Critical\n\nAturan Klasifikasi:\n1. TRUE_POSITIVE: Indikasi kuat eksploitasi CVE, serangan aktif, brute-force berhasil, web scanning ke file sensitif (/.env, /.git, /phpmyadmin, shell), SQLi, XSS, atau C2.\n2. NEEDS_REVIEW: Aktivitas anomali mencurigakan yang butuh verifikasi konteks (misal: vulnerability scanner tanpa eksploitasi berhasil, perubahan konfigurasi sistem, atau lonjakan error 500 tidak wajar).\n3. FALSE_POSITIVE: Trafik pengguna normal/legit yang memicu rule sensitif (misal: error 400/404 pada endpoint aplikasi valid seperti /login.php, /mhs/nim, kesalahan input user biasa, atau crawler/healthcheck internal).\n\nAturan Pengelompokan:\n- Pisahkan pengelompokan (group_key) antara trafik legit dan aktivitas serangan meskipun memiliki rule.id Wazuh yang sama.\n- Gabungkan kandidat yang merupakan kampanye serangan yang sama ke dalam satu insiden walaupun menyasar beberapa agent berbeda di dalam tenant ini.\nKeluarkan output HANYA dalam format JSON valid sesuai skema yang diminta.';
       }
     });
 
@@ -2633,6 +2782,10 @@
       triageState.exSearch = e.target.value;
       renderExclusionsPage();
     });
+    $('#ex-filter-tenant')?.addEventListener('change', (e) => {
+      triageState.exFilterTenant = e.target.value;
+      renderExclusionsPage();
+    });
     $('#ex-filter-mode')?.addEventListener('change', (e) => {
       triageState.exFilterMode = e.target.value;
       renderExclusionsPage();
@@ -2647,13 +2800,25 @@
         const res = await B.apiFetch('/api/triage/exclusions', {
           method: 'POST',
           body: JSON.stringify({
+            tenant: ($('#ex-new-tenant')?.value || '').trim(),
             target: $('#ex-new-target')?.value || 'path',
             mode: $('#ex-new-mode')?.value || 'contains',
             pattern,
+            ruleIds: splitCsvInput($('#ex-new-rule-ids')?.value),
+            httpStatuses: splitCsvInput($('#ex-new-statuses')?.value),
+            srcIps: splitCsvInput($('#ex-new-src-ips')?.value),
+            userAgent: ($('#ex-new-ua')?.value || '').trim(),
+            referer: ($('#ex-new-referer')?.value || '').trim(),
             note: ($('#ex-new-note')?.value || '').trim(),
           }),
         });
+        if ($('#ex-new-tenant')) $('#ex-new-tenant').value = '';
         if ($('#ex-new-pattern')) $('#ex-new-pattern').value = '';
+        if ($('#ex-new-rule-ids')) $('#ex-new-rule-ids').value = '';
+        if ($('#ex-new-statuses')) $('#ex-new-statuses').value = '';
+        if ($('#ex-new-src-ips')) $('#ex-new-src-ips').value = '';
+        if ($('#ex-new-ua')) $('#ex-new-ua').value = '';
+        if ($('#ex-new-referer')) $('#ex-new-referer').value = '';
         if ($('#ex-new-note')) $('#ex-new-note').value = '';
         if ($('#ex-add-form')) $('#ex-add-form').hidden = true;
         if (res.rules) {
@@ -2719,6 +2884,7 @@
       openExcludePreviewModal({
         source: insp.source,
         isBatch24h: insp.source === 'batch24h',
+        tenant: insp.tenant && insp.tenant !== '—' ? insp.tenant : '',
         groupIds: [insp.groupId],
         title: insp.title,
         subtitle: `Pratinjau rule exclude untuk seluruh grup "${insp.title}" (${insp.alerts.length} alert).`,
@@ -2741,6 +2907,7 @@
       openExcludePreviewModal({
         source: insp.source,
         isBatch24h: insp.source === 'batch24h',
+        tenant: insp.tenant && insp.tenant !== '—' ? insp.tenant : '',
         groupId: insp.groupId,
         alertIds: ids,
         title: insp.title,
@@ -2787,18 +2954,17 @@
       if (e.target === $('#exclude-preview-modal')) closeExcludePreviewModal();
     });
     $('#btn-ex-modal-add')?.addEventListener('click', () => {
-      const existing = [];
-      $('#ex-modal-tbody')?.querySelectorAll('tr').forEach((tr) => {
-        existing.push({
-          enabled: Boolean($('.exm-enabled', tr)?.checked),
-          target: $('.exm-target', tr)?.value || 'path',
-          mode: $('.exm-mode', tr)?.value || 'wildcard',
-          pattern: $('.exm-pattern', tr)?.value || '',
-          note: $('.exm-note', tr)?.value || '',
-          source: tr.dataset.source || 'manual',
-        });
+      const ctx = triageState.excludePreviewCtx;
+      const existing = collectExcludePreviewRows(true);
+      existing.push({
+        enabled: true,
+        tenant: ctx?.tenant || '',
+        target: 'path',
+        mode: 'wildcard',
+        pattern: '',
+        note: 'Aturan manual analis',
+        source: 'manual',
       });
-      existing.push({ enabled: true, target: 'path', mode: 'wildcard', pattern: '', note: 'Aturan manual analis', source: 'manual' });
       renderExcludePreviewRows(existing);
     });
     $('#btn-ex-modal-ai')?.addEventListener('click', async () => {
@@ -2817,6 +2983,7 @@
           method: 'POST',
           body: JSON.stringify({
             source: ctx.source,
+            tenant: ctx.tenant || '',
             groupId: ctx.groupId,
             groupIds: ctx.groupIds,
             alertIds: ctx.alertIds,
@@ -2824,7 +2991,7 @@
             title: ctx.title,
           }),
         });
-        renderExcludePreviewRows((res.rules || []).map((r) => ({ ...r, enabled: true, source: 'ai_suggest' })));
+        renderExcludePreviewRows((res.rules || []).map((r) => ({ ...r, tenant: r.tenant || ctx.tenant || '', enabled: true, source: 'ai_suggest' })));
         showInlineStatus(msgEl, true, res.reasoning || 'Saran AI berhasil dimuat. Anda dapat mengedit pola sebelum menyimpan.');
       } catch (err) {
         showInlineStatus(msgEl, false, err.message);

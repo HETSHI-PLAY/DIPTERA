@@ -7,9 +7,9 @@
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
   <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126k" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126k" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126k" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126l" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261126l" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261126l" />
 </head>
 
 <body>
@@ -1039,7 +1039,12 @@
             <button type="button" class="btn ghost btn-sm" id="btn-ex-refresh">Segarkan</button>
           </div>
 
+          <datalist id="ex-tenant-list"></datalist>
           <div id="ex-add-form" class="triage-custom-range-bar" hidden>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Tenant (kosong = Global)</span>
+              <input type="text" id="ex-new-tenant" list="ex-tenant-list" placeholder="Global / ikmicirebon" spellcheck="false" />
+            </label>
             <label class="triage-range-field triage-range-field-sm">
               <span class="field-label">Target</span>
               <select id="ex-new-target">
@@ -1047,9 +1052,11 @@
                 <option value="filename">Nama File</option>
                 <option value="rule_description">Rule Description</option>
                 <option value="rule_id">Rule ID</option>
+                <option value="http_status">HTTP Status</option>
                 <option value="src_ip">Source IP</option>
                 <option value="agent_name">Agent Name</option>
                 <option value="user_agent">User-Agent</option>
+                <option value="referer">Referer</option>
                 <option value="full_log">Full Log</option>
               </select>
             </label>
@@ -1066,6 +1073,26 @@
               <span class="field-label">Pola (pakai * untuk nilai dinamis)</span>
               <input type="text" id="ex-new-pattern" placeholder="/service/mhs/*/ip-kemarin atau *.log" spellcheck="false" />
             </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Kunci Rule ID (AND)</span>
+              <input type="text" id="ex-new-rule-ids" placeholder="31153, 31154" spellcheck="false" />
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Kunci HTTP Status (AND)</span>
+              <input type="text" id="ex-new-statuses" placeholder="200, 303, 419" spellcheck="false" />
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Kunci Source IP (AND)</span>
+              <input type="text" id="ex-new-src-ips" placeholder="123.253.78.156" spellcheck="false" />
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Kunci User-Agent (AND)</span>
+              <input type="text" id="ex-new-ua" placeholder="MoodleMobile" spellcheck="false" />
+            </label>
+            <label class="triage-range-field triage-range-field-sm">
+              <span class="field-label">Kunci Referer (AND)</span>
+              <input type="text" id="ex-new-referer" placeholder="indigoes.ikmi.ac.id" spellcheck="false" />
+            </label>
             <label class="triage-range-field">
               <span class="field-label">Keterangan (opsional)</span>
               <input type="text" id="ex-new-note" placeholder="Alasan pengecualian" />
@@ -1080,8 +1107,12 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="ex-search" placeholder="Cari pola atau keterangan rule exclude…" />
+              <input type="search" id="ex-search" placeholder="Cari pola, tenant, pengunci AND, atau keterangan…" />
             </div>
+            <select id="ex-filter-tenant" aria-label="Filter tenant daftar exclude">
+              <option value="all">Semua Tenant</option>
+              <option value="__global__">Global (Semua Tenant)</option>
+            </select>
             <select id="ex-filter-mode" aria-label="Filter daftar exclude">
               <option value="all">Semua Rule</option>
               <option value="enabled">Aktif Saja</option>
@@ -1094,19 +1125,21 @@
           <div class="wzh-discover-wrap">
             <table class="wzh-discover-table wzh-ex-table">
               <colgroup>
-                <col style="width: 64px" />
-                <col style="width: 112px" />
+                <col style="width: 56px" />
                 <col style="width: 108px" />
-                <col style="width: 30%" />
-                <col style="width: 30%" />
-                <col style="width: 136px" />
+                <col style="width: 108px" />
+                <col style="width: 96px" />
+                <col style="width: 34%" />
+                <col style="width: 28%" />
+                <col style="width: 132px" />
               </colgroup>
               <thead>
                 <tr>
                   <th>Aktif</th>
+                  <th>Tenant</th>
                   <th>Target</th>
                   <th>Mode</th>
-                  <th>Pola</th>
+                  <th>Pola &amp; Pengunci (AND)</th>
                   <th>Sumber &amp; Keterangan</th>
                   <th>Aksi</th>
                 </tr>
@@ -1290,8 +1323,8 @@
     <div class="modal-card modal-card-wide">
       <div class="modal-head">
         <div>
-          <h2 id="ex-modal-title">Pratinjau &amp; Konfirmasi Rule Exclude</h2>
-          <p class="field-hint" id="ex-modal-subtitle">Tinjau pola yang akan dijadikan rule exclude. Ubah manual atau gunakan AI Analisis Exclude bila perlu.</p>
+          <h2 id="ex-modal-title">Pratinjau &amp; Konfirmasi Rule Exclude (AND-Lock)</h2>
+          <p class="field-hint" id="ex-modal-subtitle">Tinjau tenant, pola utama, dan syarat pengunci AND (Rule ID, HTTP Status, Source IP, User-Agent, Referer) sebelum menyimpan.</p>
         </div>
         <button type="button" class="btn ghost btn-sm" id="btn-close-ex-modal">Tutup</button>
       </div>
@@ -1300,34 +1333,12 @@
         <button type="button" class="btn accent btn-sm" id="btn-ex-modal-ai">AI Analisis Exclude</button>
         <button type="button" class="btn ghost btn-sm" id="btn-ex-modal-add">+ Tambah Pola Manual</button>
         <span class="spacer"></span>
-        <span class="field-hint">Tips Wildcard: pakai <code class="mono">*</code> untuk ID/NIM/angka, mis. <code class="mono">/service/mhs/*/ip-kemarin</code></span>
+        <span class="field-hint">Tips: Isi <code class="mono">Rule ID + HTTP Status</code> / <code class="mono">Source IP</code> agar serangan (SQLi/401) tidak ikut lolos.</span>
       </div>
 
       <div id="ex-modal-ai-msg" class="um-msg" hidden></div>
 
-      <div class="wzh-discover-wrap">
-        <table class="wzh-discover-table wzh-ex-modal-table">
-          <colgroup>
-            <col style="width: 44px" />
-            <col style="width: 148px" />
-            <col style="width: 120px" />
-            <col />
-            <col style="width: 24%" />
-            <col style="width: 72px" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Pakai</th>
-              <th>Target</th>
-              <th>Mode</th>
-              <th>Pola</th>
-              <th>Keterangan</th>
-              <th>Aksi</th>
-            </tr>
-          </thead>
-          <tbody id="ex-modal-tbody"></tbody>
-        </table>
-      </div>
+      <div id="ex-modal-list" class="wzh-ex-card-list"></div>
 
       <div class="wzh-modal-foot">
         <button type="button" class="btn ghost btn-sm" id="btn-ex-modal-cancel">Batal</button>
@@ -1356,11 +1367,11 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126k"></script>
-  <script src="/js/numbering.js?v=20261126k"></script>
-  <script src="/js/extract.js?v=20261126k"></script>
-  <script src="/js/app.js?v=20261126k"></script>
-  <script src="/js/triage-ui.js?v=20261126k"></script>
+  <script src="/config.js?v=20261126l"></script>
+  <script src="/js/numbering.js?v=20261126l"></script>
+  <script src="/js/extract.js?v=20261126l"></script>
+  <script src="/js/app.js?v=20261126l"></script>
+  <script src="/js/triage-ui.js?v=20261126l"></script>
 </body>
 
 </html>

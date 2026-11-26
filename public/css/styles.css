@@ -3444,12 +3444,92 @@ textarea {
   flex-wrap: wrap;
 }
 
-.wzh-ex-modal-table input[type="text"],
-.wzh-ex-modal-table select {
+.wzh-ex-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 54vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.wzh-ex-card-row {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wzh-ex-card-top {
+  display: grid;
+  grid-template-columns: auto minmax(112px, 140px) minmax(120px, 152px) minmax(100px, 124px) minmax(200px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.wzh-ex-card-locks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.wzh-ex-lock-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wzh-ex-lock-field-wide {
+  grid-column: span 2;
+}
+
+.wzh-ex-lock-field input[type="text"],
+.wzh-ex-card-top input[type="text"],
+.wzh-ex-card-top select {
   width: 100%;
   min-width: 0;
   padding: 4px 8px;
   font-size: 12px;
+}
+
+.wzh-ex-lock-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.wzh-ex-inline-edits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.wzh-ex-inline-edits input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .wzh-ex-card-top,
+  .wzh-ex-card-locks,
+  .wzh-ex-inline-edits {
+    grid-template-columns: 1fr;
+  }
+
+  .wzh-ex-lock-field-wide {
+    grid-column: span 1;
+  }
 }
 
 .wzh-modal-foot {

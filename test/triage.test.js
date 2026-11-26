@@ -1055,7 +1055,202 @@ async function main() {
     assert.equal(customReq.think, true);
     assert.equal(customReq.format, 'json');
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (19/19)');
+    // 20) Official Wazuh severity scale, tenant-scoped exclusions & IKMI multi-condition AND-lock regression
+    await httpJson(`${baseUrl}/api/triage/purge`, { method: 'POST', body: { clearState: true } });
+    ollamaMode = 'smart';
+    ollamaRequests = [];
+    mockWazuhHits.push(
+      {
+        _id: 'ikmi-sev10',
+        _source: {
+          '@timestamp': '2029-11-26T10:25:01.000Z',
+          agent: { id: '201', name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes from same source ip.' },
+          data: { srcip: '203.0.113.55', id: '404', url: '/tentang-kampus' },
+          full_log: '203.0.113.55 - - [26/Nov/2029:10:25:01] "GET /tentang-kampus HTTP/1.1" 404 512 "-" "Mozilla/5.0"',
+        },
+      },
+    );
+    const sevPoll = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:24:50.000Z', to: '2029-11-26T10:25:10.000Z', size: 10 },
+    });
+    assert.equal(sevPoll.status, 200);
+    assert.equal(ollamaRequests.length, 1);
+    const sevSys = ollamaRequests[0].messages.find((m) => m.role === 'system')?.content || '';
+    const sevUser = ollamaRequests[0].messages.find((m) => m.role === 'user')?.content || '';
+    assert.ok(sevSys.includes('Level 7–11: Medium'), 'System prompt must state Level 7-11 is Medium');
+    assert.ok(sevUser.includes('"severity_label":"Medium"'), 'Candidate payload must tag level 10 as Medium');
+
+    // Auto-derive IKMI /mod/quiz/edit.php exclusion scoped to ikmicirebon with AND locks
+    const quizSuggest = await httpJson(`${baseUrl}/api/triage/exclusions/suggest`, {
+      method: 'POST',
+      body: {
+        source: 'live',
+        title: 'High amount of POST requests',
+        rawAlerts: [
+          {
+            _id: 'ikmi-quiz-1',
+            agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+            rule: { id: '31154', level: 10, description: 'High amount of POST requests in a small period of time.' },
+            data: { srcip: '36.70.1.9', id: '303', url: '/mod/quiz/edit.php?cmid=442' },
+            full_log: '36.70.1.9 - - [26/Nov/2029:10:26:00] "POST /mod/quiz/edit.php?cmid=442 HTTP/1.1" 303 0 "https://indigoes.ikmi.ac.id/mod/quiz/view.php" "Mozilla/5.0"',
+          },
+        ],
+      },
+    });
+    assert.equal(quizSuggest.status, 200);
+    assert.equal(quizSuggest.json.tenant, 'ikmicirebon');
+    const quizRule = quizSuggest.json.rules[0];
+    assert.equal(quizRule.tenant, 'ikmicirebon');
+    assert.deepEqual(quizRule.ruleIds, ['31154']);
+    assert.deepEqual(quizRule.httpStatuses, ['303']);
+    assert.equal(quizRule.referer, 'indigoes.ikmi.ac.id');
+
+    // Create IKMI locked exclusion rules and test against live Wazuh feed
+    const ikmiRulesToAdd = [
+      quizRule,
+      {
+        tenant: 'ikmicirebon',
+        target: 'path',
+        mode: 'wildcard',
+        pattern: '/cms/login*',
+        ruleIds: ['31151'],
+        httpStatuses: ['419'],
+        note: 'IKMI CSRF expired only',
+      },
+      {
+        tenant: 'ikmicirebon',
+        target: 'path',
+        mode: 'wildcard',
+        pattern: '/webservice/rest/server.php*wsfunction=core_course_view_course*',
+        ruleIds: ['31153', '31154'],
+        httpStatuses: ['200'],
+        userAgent: 'MoodleMobile',
+        note: 'IKMI MoodleMobile REST API',
+      },
+      {
+        tenant: 'ikmicirebon',
+        target: 'path',
+        mode: 'wildcard',
+        pattern: '/cms/apicms_ikmi_v2.php*',
+        ruleIds: ['31153', '31154'],
+        httpStatuses: ['200'],
+        srcIps: ['123.253.78.156'],
+        note: 'IKMI internal gateway SIAKAD sync',
+      },
+    ];
+    for (const r of ikmiRulesToAdd) {
+      const addRes = await httpJson(`${baseUrl}/api/triage/exclusions`, { method: 'POST', body: r });
+      assert.ok(addRes.status === 200 || addRes.status === 201);
+    }
+
+    mockWazuhHits.push(
+      // Excluded: IKMI MoodleMobile 200 OK rate rule
+      {
+        _id: 'ikmi-mob-ok',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:10.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+          data: { srcip: '114.5.10.2', id: '200', url: '/webservice/rest/server.php?wsfunction=core_course_view_course' },
+          full_log: '114.5.10.2 - - [26/Nov/2029:10:26:10] "POST /webservice/rest/server.php?wsfunction=core_course_view_course HTTP/1.1" 200 900 "-" "MoodleMobile/4.3"',
+        },
+      },
+      // NOT Excluded: Same path & MoodleMobile UA & HTTP 200, but SQLi signature rule 31103!
+      {
+        _id: 'ikmi-sqli-blindspot-check',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:11.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31103', level: 12, description: 'SQL injection attempt.' },
+          data: { srcip: '185.10.1.9', id: '200', url: '/webservice/rest/server.php?wsfunction=core_course_view_course' },
+          full_log: '185.10.1.9 - - [26/Nov/2029:10:26:11] "POST /webservice/rest/server.php?wsfunction=core_course_view_course HTTP/1.1" 200 900 "-" "MoodleMobile/4.3"',
+        },
+      },
+      // NOT Excluded: Same path & rule 31153 & HTTP 200, but python-requests bot UA!
+      {
+        _id: 'ikmi-bot-ua',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:12.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+          data: { srcip: '185.10.1.9', id: '200', url: '/webservice/rest/server.php?wsfunction=core_course_view_course' },
+          full_log: '185.10.1.9 - - [26/Nov/2029:10:26:12] "POST /webservice/rest/server.php?wsfunction=core_course_view_course HTTP/1.1" 200 900 "-" "python-requests/2.31"',
+        },
+      },
+      // Excluded: IKMI /cms/login 419 CSRF
+      {
+        _id: 'ikmi-login-419',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:13.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+          data: { srcip: '36.70.1.9', id: '419', url: '/cms/login' },
+          full_log: '36.70.1.9 - - [26/Nov/2029:10:26:13] "POST /cms/login HTTP/1.1" 419 420 "-" "Mozilla/5.0"',
+        },
+      },
+      // NOT Excluded: IKMI /cms/login 401 Brute Force
+      {
+        _id: 'ikmi-login-401',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:14.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+          data: { srcip: '45.10.20.30', id: '401', url: '/cms/login' },
+          full_log: '45.10.20.30 - - [26/Nov/2029:10:26:14] "POST /cms/login HTTP/1.1" 401 420 "-" "Mozilla/5.0"',
+        },
+      },
+      // NOT Excluded: Different tenant (instiki) with exact same /cms/login + 419!
+      {
+        _id: 'instiki-login-419',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:15.000Z',
+          agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+          rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
+          data: { srcip: '36.70.1.9', id: '419', url: '/cms/login' },
+          full_log: '36.70.1.9 - - [26/Nov/2029:10:26:15] "POST /cms/login HTTP/1.1" 419 420 "-" "Mozilla/5.0"',
+        },
+      },
+      // Excluded: IKMI internal gateway /cms/apicms_ikmi_v2.php
+      {
+        _id: 'ikmi-apicms-gw',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:16.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+          data: { srcip: '123.253.78.156', id: '200', url: '/cms/apicms_ikmi_v2.php?sync=1' },
+          full_log: '123.253.78.156 - - [26/Nov/2029:10:26:16] "POST /cms/apicms_ikmi_v2.php?sync=1 HTTP/1.1" 200 120 "-" "curl/8.0"',
+        },
+      },
+      // NOT Excluded: External scraper IP on /cms/apicms_ikmi_v2.php
+      {
+        _id: 'ikmi-apicms-ext',
+        _source: {
+          '@timestamp': '2029-11-26T10:26:17.000Z',
+          agent: { name: 'srv-indigoes', labels: { tenant: 'ikmicirebon' } },
+          rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+          data: { srcip: '45.10.20.30', id: '200', url: '/cms/apicms_ikmi_v2.php?sync=1' },
+          full_log: '45.10.20.30 - - [26/Nov/2029:10:26:17] "POST /cms/apicms_ikmi_v2.php?sync=1 HTTP/1.1" 200 120 "-" "curl/8.0"',
+        },
+      },
+    );
+
+    const feedRes = await httpJson(
+      `${baseUrl}/api/triage/live?range=custom&from=2029-11-26T10:26:05.000Z&to=2029-11-26T10:26:25.000Z&size=50`,
+    );
+    assert.equal(feedRes.status, 200);
+    const byId = new Map(feedRes.json.items.map((it) => [it.alert_id, it]));
+    assert.equal(byId.get('ikmi-mob-ok').status_code, 'excluded');
+    assert.notEqual(byId.get('ikmi-sqli-blindspot-check').status_code, 'excluded', 'SQLi signature rule must NEVER be excluded');
+    assert.notEqual(byId.get('ikmi-bot-ua').status_code, 'excluded', 'External bot UA must NOT match MoodleMobile lock');
+    assert.equal(byId.get('ikmi-login-419').status_code, 'excluded');
+    assert.notEqual(byId.get('ikmi-login-401').status_code, 'excluded', '401 brute force on /cms/login must NOT be excluded');
+    assert.notEqual(byId.get('instiki-login-419').status_code, 'excluded', 'ikmicirebon rule must NOT exclude instiki tenant');
+    assert.equal(byId.get('ikmi-apicms-gw').status_code, 'excluded');
+    assert.notEqual(byId.get('ikmi-apicms-ext').status_code, 'excluded', 'External IP on apicms must NOT match gateway IP lock');
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (20/20)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));
