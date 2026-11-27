@@ -121,6 +121,7 @@ function cloneJson(v) {
 function defaultConfig() {
   return {
     workerEnabled: false,
+    aiEnabled: true,
     wazuh: {
       url: '',
       indexPattern: 'wazuh-alerts-*',
@@ -158,6 +159,7 @@ function defaultConfig() {
 function defaultTriageState() {
   return {
     watermarkTimestamp: null,
+    workerPausedAt: null,
     groups: [],
     processedAlertIds: [],
     dismissedAlertIds: [],
@@ -1141,6 +1143,10 @@ function createTriageEngine(options = {}) {
       ...state.workerStatus,
       ...liveWorker,
       running: pollInFlight,
+      workerEnabled: Boolean(config.workerEnabled),
+      aiEnabled: config.aiEnabled !== false,
+      workerPausedAt: state.workerPausedAt || null,
+      unanalyzedCount: state.groups.filter((g) => g.unanalyzed).length,
       aiModel: model,
       ollamaConfigured: Boolean(ollamaUrl && model),
       wazuhConfigured: Boolean(baseUrl),
@@ -1212,6 +1218,7 @@ function createTriageEngine(options = {}) {
 
     return {
       workerEnabled: Boolean(raw.workerEnabled),
+      aiEnabled: raw.aiEnabled !== false,
       wazuh: mergedWazuh,
       ollama: mergedOllama,
       exclusionRules: rules,
@@ -1225,6 +1232,7 @@ function createTriageEngine(options = {}) {
     if (!raw || typeof raw !== 'object') return def;
     return {
       watermarkTimestamp: raw.watermarkTimestamp || null,
+      workerPausedAt: raw.workerPausedAt || null,
       groups: Array.isArray(raw.groups) ? raw.groups : [],
       processedAlertIds: Array.isArray(raw.processedAlertIds) ? raw.processedAlertIds : [],
       dismissedAlertIds: Array.isArray(raw.dismissedAlertIds) ? raw.dismissedAlertIds : [],
@@ -1331,6 +1339,9 @@ function createTriageEngine(options = {}) {
     return {
       ok: true,
       workerEnabled: Boolean(config.workerEnabled),
+      aiEnabled: config.aiEnabled !== false,
+      workerPausedAt: state.workerPausedAt || null,
+      unanalyzedCount: state.groups.filter((g) => g.unanalyzed).length,
       workerStatus: buildWorkerStatusSnapshot(),
       watermarkTimestamp: state.watermarkTimestamp,
       counts: summarizeCounts(state.groups),
@@ -1494,6 +1505,7 @@ function createTriageEngine(options = {}) {
       perTenant,
       topExcludedRules,
       workerEnabled: Boolean(config.workerEnabled),
+      aiEnabled: config.aiEnabled !== false,
       workerStatus: buildWorkerStatusSnapshot(),
       watermarkTimestamp: state.watermarkTimestamp,
     };
@@ -1504,6 +1516,9 @@ function createTriageEngine(options = {}) {
     const tenantsSet = new Set(batch24h.groups.map((g) => g.tenant_mapped).filter(Boolean));
     return {
       ok: true,
+      workerEnabled: Boolean(config.workerEnabled),
+      aiEnabled: config.aiEnabled !== false,
+      unanalyzedCount: batch24h.groups.filter((g) => g.unanalyzed).length,
       job: { ...batch24h.job },
       counts: summarizeCounts(batch24h.groups),
       tenants: [...tenantsSet].sort(),
@@ -1644,7 +1659,7 @@ function createTriageEngine(options = {}) {
     };
   }
 
-  async function queryWazuhAlerts({ sinceIso = null, untilIso = null, inclusiveSince = false, size = 500, minLevel, maxLevel } = {}) {
+  async function queryWazuhAlerts({ sinceIso = null, untilIso = null, inclusiveSince = false, size = 500, minLevel, maxLevel, sortOrder = 'desc' } = {}) {
     const w = config.wazuh;
     if (!String(w.url || '').trim()) {
       throw Object.assign(new Error('Wazuh Indexer URL belum dikonfigurasi.'), { status: 400 });
@@ -1659,10 +1674,11 @@ function createTriageEngine(options = {}) {
       filter.push({ range: { '@timestamp': tsRange } });
     }
 
+    const order = String(sortOrder || '').toLowerCase() === 'asc' ? 'asc' : 'desc';
     const body = {
       size: Math.min(Math.max(1, Number(size) || 500), 1000),
       track_total_hits: true,
-      sort: [{ '@timestamp': { order: 'desc' } }],
+      sort: [{ '@timestamp': { order } }],
       query: { bool: { filter } },
     };
 
@@ -2055,6 +2071,7 @@ function createTriageEngine(options = {}) {
     const onChunkStart = typeof hooks.onChunkStart === 'function' ? hooks.onChunkStart : null;
     const onChunkProgress = typeof hooks.onChunkProgress === 'function' ? hooks.onChunkProgress : null;
     const onTenantMerged = typeof hooks.onTenantMerged === 'function' ? hooks.onTenantMerged : null;
+    const useAi = config.aiEnabled !== false;
 
     let analyzedCount = 0;
     let processedChunks = 0;
@@ -2069,26 +2086,28 @@ function createTriageEngine(options = {}) {
       const chunkErrors = new Map();
 
       const batchSize = Math.max(1, Math.min(30, Number(config.ollama?.microBatchSize || OLLAMA_MICRO_BATCH_SIZE)));
-      for (let i = 0; i < candidates.length; i += batchSize) {
-        if (isAborted()) return { analyzedCount, aborted: true };
-        const chunk = candidates.slice(i, i + batchSize);
-        if (onChunkStart) {
-          onChunkStart({
-            tenant,
-            chunkIndex: processedChunks + 1,
-            chunkSize: chunk.length,
-          });
+      if (useAi) {
+        for (let i = 0; i < candidates.length; i += batchSize) {
+          if (isAborted()) return { analyzedCount, aborted: true };
+          const chunk = candidates.slice(i, i + batchSize);
+          if (onChunkStart) {
+            onChunkStart({
+              tenant,
+              chunkIndex: processedChunks + 1,
+              chunkSize: chunk.length,
+            });
+          }
+          try {
+            const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
+            for (const [cid, val] of partMap.entries()) aiMap.set(cid, val);
+          } catch (err) {
+            const msg = err.message || 'Ollama tidak terjangkau';
+            for (const c of chunk) chunkErrors.set(c.candidateId, msg);
+          }
+          processedChunks++;
+          const analyzedInChunk = chunk.reduce((sum, c) => sum + (c.alerts?.length || 0), 0);
+          if (onChunkProgress) onChunkProgress({ tenant, processedChunks, analyzedInChunk });
         }
-        try {
-          const partMap = await runOllamaMicroBatch(tenant, chunk, existingGroupKeys);
-          for (const [cid, val] of partMap.entries()) aiMap.set(cid, val);
-        } catch (err) {
-          const msg = err.message || 'Ollama tidak terjangkau';
-          for (const c of chunk) chunkErrors.set(c.candidateId, msg);
-        }
-        processedChunks++;
-        const analyzedInChunk = chunk.reduce((sum, c) => sum + (c.alerts?.length || 0), 0);
-        if (onChunkProgress) onChunkProgress({ tenant, processedChunks, analyzedInChunk });
       }
 
       if (isAborted()) return { analyzedCount, aborted: true };
@@ -2097,11 +2116,11 @@ function createTriageEngine(options = {}) {
       const processedAlertsInTenant = [];
 
       for (const cand of candidates) {
-        const ai = aiMap.get(cand.candidateId) || null;
+        const ai = useAi ? (aiMap.get(cand.candidateId) || null) : null;
         const fallbackErr = chunkErrors.get(cand.candidateId) || null;
         const rawVerdict = String(ai?.verdict || '').trim().toUpperCase();
-        const verdict = VALID_VERDICTS.includes(rawVerdict) ? rawVerdict : 'NEEDS_REVIEW';
-        const unanalyzed = !ai || !VALID_VERDICTS.includes(rawVerdict);
+        const verdict = useAi && VALID_VERDICTS.includes(rawVerdict) ? rawVerdict : 'NEEDS_REVIEW';
+        const unanalyzed = !useAi || !ai || !VALID_VERDICTS.includes(rawVerdict);
         const groupKey = String(ai?.group_key || (cand.ruleId + '-' + (cand.normalizedPath || 'general'))).trim().slice(0, 96);
         const incidentTitle = String(
           ai?.incident_title ||
@@ -2109,9 +2128,11 @@ function createTriageEngine(options = {}) {
         ).trim().slice(0, 180);
         const aiReasoning = String(
           ai?.ai_reasoning ||
-          (fallbackErr
-            ? `Unanalyzed (Ollama fallback: ${fallbackErr}). Alert tetap dimasukkan ke Needs Review agar tidak terlewat.`
-            : 'Dikelompokkan otomatis sesuai konteks alert.')
+          (!useAi
+            ? 'Analisis AI sedang OFF. Alert dikelompokkan otomatis ke Perlu Ditinjau tanpa Ollama.'
+            : fallbackErr
+              ? `Unanalyzed (Ollama fallback: ${fallbackErr}). Alert tetap dimasukkan ke Needs Review agar tidak terlewat.`
+              : 'Dikelompokkan otomatis sesuai konteks alert.')
         ).trim();
 
         const semanticBucketKey = tenant + '::' + verdict + '::' + groupKey;
@@ -2297,9 +2318,10 @@ function createTriageEngine(options = {}) {
           phaseMessage: `Ditarik ${hits.length} alert · menyaring aturan Exclude…`,
         });
 
+        const aiOn = config.aiEnabled !== false;
         const { excludedCount, analyzedCount, aborted } = await processHitsIntoQueue(hits, runEpoch, (stage, info = {}) => {
           if (stage === 'filtered') {
-            if (info.totalChunks > 0) {
+            if (info.totalChunks > 0 && aiOn) {
               setLiveWorker({
                 phase: 'analyzing_ai',
                 aiActive: true,
@@ -2308,6 +2330,16 @@ function createTriageEngine(options = {}) {
                 totalChunks: info.totalChunks,
                 processedChunks: 0,
                 phaseMessage: `AI Ollama menganalisis ${info.candidateCount} kandidat (${info.totalChunks} batch)…`,
+              });
+            } else if (info.totalChunks > 0) {
+              setLiveWorker({
+                phase: 'grouping',
+                aiActive: false,
+                excludedCount: info.excludedCount,
+                candidateCount: info.candidateCount,
+                totalChunks: 0,
+                processedChunks: 0,
+                phaseMessage: `AI OFF · mengelompokkan ${info.candidateCount} kandidat tanpa Ollama…`,
               });
             } else {
               setLiveWorker({
@@ -2348,7 +2380,9 @@ function createTriageEngine(options = {}) {
         const intervalMs = Math.max(1, Number(config.wazuh.pollIntervalMin || 3)) * 60 * 1000;
         const nextPollIso = config.workerEnabled ? new Date(Date.now() + intervalMs).toISOString() : null;
         const doneMsg = hits.length
-          ? `Selesai · ${hits.length} ditarik · ${excludedCount} excluded · ${analyzedCount} dianalisis AI`
+          ? (aiOn
+            ? `Selesai · ${hits.length} ditarik · ${excludedCount} excluded · ${analyzedCount} dianalisis AI`
+            : `Selesai · ${hits.length} ditarik · ${excludedCount} excluded · AI OFF (${analyzedCount} dikelompokkan tanpa AI)`)
           : 'Tidak ada alert baru pada rentang ini';
         pollInFlight = false;
         state.workerStatus.lastSuccessAt = new Date().toISOString();
@@ -2418,6 +2452,319 @@ function createTriageEngine(options = {}) {
     return run;
   }
 
+  function catchUpGap(opts = {}) {
+    const maxPages = Math.min(Math.max(1, Number(opts?.maxPages) || 10), 20);
+    const pageSize = Math.min(Math.max(1, Number(opts?.pageSize) || 500), 1000);
+    const enableWorker = Boolean(opts?.enableWorker);
+    const fallbackSince = state.workerPausedAt || state.workerStatus.lastSuccessAt || state.watermarkTimestamp || new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const initialSinceIso = opts?.sinceIso ? new Date(opts.sinceIso).toISOString() : fallbackSince;
+
+    if (enableWorker) {
+      config.workerEnabled = true;
+      state.workerPausedAt = null;
+      config.updatedAt = new Date().toISOString();
+      saveConfig();
+      saveState();
+      applyScheduler();
+    }
+
+    const runEpoch = pollEpoch;
+    const run = pollLock.then(async () => {
+      if (runEpoch !== pollEpoch) {
+        return { ok: true, aborted: true, pages: 0, fetchedCount: 0, excludedCount: 0, analyzedCount: 0, snapshot: getQueueSnapshot() };
+      }
+      if (!String(config.wazuh.url || '').trim()) {
+        return { ok: false, skipped: true, reason: 'Wazuh Indexer URL belum diatur', snapshot: getQueueSnapshot() };
+      }
+
+      const startedMs = Date.now();
+      pollInFlight = true;
+      state.workerStatus.lastPollAt = new Date().toISOString();
+      setLiveWorker({
+        phase: 'fetching_wazuh',
+        aiActive: false,
+        activeTenant: '',
+        fetchedCount: 0,
+        excludedCount: 0,
+        candidateCount: 0,
+        analyzedCount: 0,
+        processedChunks: 0,
+        totalChunks: 0,
+        phaseMessage: 'Catch-up gap alert sejak polling nonaktif…',
+      });
+
+      let cursorIso = initialSinceIso;
+      let totalFetched = 0;
+      let totalExcluded = 0;
+      let totalAnalyzed = 0;
+      let pages = 0;
+
+      try {
+        const aiOn = config.aiEnabled !== false;
+        for (let page = 0; page < maxPages; page++) {
+          if (runEpoch !== pollEpoch) {
+            return { ok: true, aborted: true, pages, fetchedCount: totalFetched, excludedCount: totalExcluded, analyzedCount: totalAnalyzed, snapshot: getQueueSnapshot() };
+          }
+          setLiveWorker({
+            phase: 'fetching_wazuh',
+            aiActive: false,
+            phaseMessage: `Catch-up gap halaman ${page + 1}/${maxPages}…`,
+          });
+          const { hits } = await queryWazuhAlerts({
+            sinceIso: cursorIso,
+            inclusiveSince: true,
+            size: pageSize,
+            minLevel: config.wazuh.minRuleLevel,
+            maxLevel: config.wazuh.maxRuleLevel,
+            sortOrder: 'asc',
+          });
+          if (runEpoch !== pollEpoch) {
+            return { ok: true, aborted: true, pages, fetchedCount: totalFetched, excludedCount: totalExcluded, analyzedCount: totalAnalyzed, snapshot: getQueueSnapshot() };
+          }
+          if (!hits.length) break;
+
+          pages++;
+          totalFetched += hits.length;
+          setLiveWorker({
+            phase: 'filtering',
+            fetchedCount: totalFetched,
+            phaseMessage: `Catch-up halaman ${pages}: ditarik ${hits.length} alert…`,
+          });
+
+          const { excludedCount, analyzedCount, aborted } = await processHitsIntoQueue(hits, runEpoch, (stage, info = {}) => {
+            if (stage === 'filtered' && info.totalChunks > 0) {
+              setLiveWorker({
+                phase: aiOn ? 'analyzing_ai' : 'grouping',
+                aiActive: aiOn,
+                excludedCount: totalExcluded + (info.excludedCount || 0),
+                candidateCount: info.candidateCount,
+                totalChunks: aiOn ? info.totalChunks : 0,
+                processedChunks: 0,
+                phaseMessage: aiOn
+                  ? `Catch-up halaman ${pages}: AI Ollama menganalisis ${info.candidateCount} kandidat…`
+                  : `Catch-up halaman ${pages}: AI OFF · mengelompokkan ${info.candidateCount} kandidat…`,
+              });
+            } else if (stage === 'ai_chunk_start') {
+              setLiveWorker({
+                phase: 'analyzing_ai',
+                aiActive: true,
+                activeTenant: info.tenant || '',
+                totalChunks: info.totalChunks || 0,
+                phaseMessage: `Catch-up AI batch ${info.chunkIndex}/${info.totalChunks} (${info.tenant || 'tenant'})…`,
+              });
+            } else if (stage === 'ai_chunk_done') {
+              setLiveWorker({
+                phase: 'analyzing_ai',
+                aiActive: true,
+                activeTenant: info.tenant || '',
+                processedChunks: info.processedChunks || 0,
+                totalChunks: info.totalChunks || 0,
+                analyzedCount: totalAnalyzed + (info.analyzedCount || 0),
+              });
+            } else if (stage === 'tenant_merged') {
+              broadcastSse('state', getQueueSnapshot());
+            }
+          });
+          if (aborted || runEpoch !== pollEpoch) {
+            return { ok: true, aborted: true, pages, fetchedCount: totalFetched, excludedCount: totalExcluded, analyzedCount: totalAnalyzed, snapshot: getQueueSnapshot() };
+          }
+          totalExcluded += excludedCount;
+          totalAnalyzed += analyzedCount;
+
+          if (hits.length < pageSize) break;
+          let latestMs = -Infinity;
+          let latestIso = null;
+          for (const h of hits) {
+            const rawTs = extractAlertTimestamp(h.raw_wazuh_alert);
+            const ms = rawTs ? Date.parse(rawTs) : NaN;
+            if (!Number.isNaN(ms) && ms > latestMs) {
+              latestMs = ms;
+              latestIso = new Date(ms).toISOString();
+            }
+          }
+          const prevMs = cursorIso ? Date.parse(cursorIso) : -Infinity;
+          if (!latestIso || latestMs <= prevMs) break;
+          cursorIso = latestIso;
+        }
+
+        const durationMs = Date.now() - startedMs;
+        const intervalMs = Math.max(1, Number(config.wazuh.pollIntervalMin || 3)) * 60 * 1000;
+        const nextPollIso = config.workerEnabled ? new Date(Date.now() + intervalMs).toISOString() : null;
+        const doneMsg = totalFetched
+          ? `Catch-up selesai · ${totalFetched} ditarik · ${totalExcluded} excluded · ${totalAnalyzed} diproses`
+          : 'Catch-up selesai · tidak ada alert tertinggal pada rentang gap';
+        pollInFlight = false;
+        state.workerPausedAt = null;
+        state.workerStatus.lastSuccessAt = new Date().toISOString();
+        state.workerStatus.lastError = null;
+        state.workerStatus.lastBatchCount = totalFetched;
+        state.workerStatus.lastExcludedCount = totalExcluded;
+        state.workerStatus.lastAnalyzedCount = totalAnalyzed;
+        state.workerStatus.lastDurationMs = durationMs;
+        state.workerStatus.phaseMessage = doneMsg;
+        setLiveWorker({
+          phase: 'done',
+          aiActive: false,
+          activeTenant: '',
+          fetchedCount: totalFetched,
+          excludedCount: totalExcluded,
+          analyzedCount: totalAnalyzed,
+          lastDurationMs: durationMs,
+          nextPollAt: nextPollIso,
+          phaseMessage: doneMsg,
+        }, false);
+        saveState();
+        broadcastSse('worker', buildWorkerStatusSnapshot());
+        broadcastSse('state', getQueueSnapshot());
+        return {
+          ok: true,
+          sinceIso: initialSinceIso,
+          pages,
+          fetchedCount: totalFetched,
+          excludedCount: totalExcluded,
+          analyzedCount: totalAnalyzed,
+          snapshot: getQueueSnapshot(),
+        };
+      } catch (err) {
+        if (runEpoch !== pollEpoch) {
+          return { ok: true, aborted: true, pages, fetchedCount: totalFetched, excludedCount: totalExcluded, analyzedCount: totalAnalyzed, snapshot: getQueueSnapshot() };
+        }
+        const durationMs = Date.now() - startedMs;
+        const errMsg = `Gagal catch-up: ${err.message || 'Gagal polling Wazuh Indexer'}`;
+        pollInFlight = false;
+        state.workerStatus.lastError = err.message || 'Gagal catch-up Wazuh Indexer';
+        state.workerStatus.lastDurationMs = durationMs;
+        state.workerStatus.phaseMessage = errMsg;
+        setLiveWorker({
+          phase: 'error',
+          aiActive: false,
+          activeTenant: '',
+          lastDurationMs: durationMs,
+          phaseMessage: errMsg,
+        }, false);
+        saveState();
+        broadcastSse('worker', buildWorkerStatusSnapshot());
+        broadcastSse('state', getQueueSnapshot());
+        throw err;
+      } finally {
+        pollInFlight = false;
+        if (liveWorker.aiActive || liveWorker.phase === 'fetching_wazuh' || liveWorker.phase === 'filtering' || liveWorker.phase === 'analyzing_ai') {
+          setLiveWorker({ phase: 'idle', aiActive: false, activeTenant: '' });
+        }
+      }
+    });
+
+    pollLock = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async function reanalyzeUnanalyzed(opts = {}) {
+    const source = opts?.source === 'batch24h' ? 'batch24h' : 'queue';
+    if (opts?.enableAi === true && config.aiEnabled === false) {
+      config.aiEnabled = true;
+      config.updatedAt = new Date().toISOString();
+      saveConfig();
+      broadcastSse('worker', buildWorkerStatusSnapshot());
+    }
+    if (config.aiEnabled === false) {
+      throw Object.assign(new Error('AI Ollama masih OFF. Aktifkan AI terlebih dahulu untuk analisis ulang.'), { status: 400 });
+    }
+
+    const listRef = source === 'batch24h' ? batch24h.groups : state.groups;
+    const filterIds = Array.isArray(opts?.groupIds) && opts.groupIds.length
+      ? new Set(opts.groupIds.map((id) => String(id || '').trim()).filter(Boolean))
+      : null;
+
+    const targetGroups = listRef.filter((g) => g && g.unanalyzed === true && (!filterIds || filterIds.has(g.group_id)));
+    if (!targetGroups.length) {
+      const snap = source === 'batch24h' ? getBatch24hSnapshot() : getQueueSnapshot();
+      return { ok: true, reanalyzedGroups: 0, analyzedAlerts: 0, snapshot: snap };
+    }
+
+    const targetIdSet = new Set(targetGroups.map((g) => g.group_id));
+    const rawWrappers = [];
+    for (const g of targetGroups) {
+      for (const a of g.alerts || []) {
+        if (a && a.alert_id) rawWrappers.push({ alert_id: a.alert_id, raw_wazuh_alert: a.raw_wazuh_alert || {} });
+      }
+    }
+
+    if (source === 'batch24h') {
+      batch24h.groups = batch24h.groups.filter((g) => !targetIdSet.has(g.group_id));
+    } else {
+      state.groups = state.groups.filter((g) => !targetIdSet.has(g.group_id));
+    }
+
+    const { byTenantBuckets } = preGroupByTenant(rawWrappers, { skipSeen: false, mutateExclusions: false });
+    const batchSize = Math.max(1, Math.min(30, Number(config.ollama?.microBatchSize || OLLAMA_MICRO_BATCH_SIZE)));
+    let totalChunks = 0;
+    for (const bucketMap of byTenantBuckets.values()) {
+      if (bucketMap.size > 0) totalChunks += Math.ceil(bucketMap.size / batchSize);
+    }
+
+    setLiveWorker({
+      phase: 'analyzing_ai',
+      aiActive: true,
+      processedChunks: 0,
+      totalChunks,
+      phaseMessage: `Menganalisis ulang ${targetGroups.length} grup Unanalyzed dengan AI…`,
+    });
+
+    try {
+      const { analyzedCount } = await runAiOnTenantBuckets(byTenantBuckets, {
+        getExistingGroupKeys: (tenant) => {
+          const cur = source === 'batch24h' ? batch24h.groups : state.groups;
+          return [...new Set(cur.filter((g) => g.tenant_mapped === tenant && g.group_key).map((g) => g.group_key))].slice(0, 20);
+        },
+        onChunkStart: ({ tenant, chunkIndex }) => {
+          setLiveWorker({
+            phase: 'analyzing_ai',
+            aiActive: true,
+            activeTenant: tenant || '',
+            totalChunks,
+            phaseMessage: `Analisis ulang AI batch ${chunkIndex}/${totalChunks} (${tenant || 'tenant'})…`,
+          });
+        },
+        onChunkProgress: ({ tenant, processedChunks }) => {
+          setLiveWorker({
+            phase: 'analyzing_ai',
+            aiActive: true,
+            activeTenant: tenant || '',
+            processedChunks,
+            totalChunks,
+          });
+        },
+        onTenantMerged: ({ groupPayloads }) => {
+          const cur = source === 'batch24h' ? batch24h.groups : state.groups;
+          appendSemanticGroupsToList(cur, groupPayloads);
+        },
+      });
+
+      if (source === 'batch24h') {
+        saveBatch24h();
+        broadcastSse('batch24h', getBatch24hSnapshot());
+      } else {
+        saveState();
+        broadcastSse('state', getQueueSnapshot());
+      }
+      setLiveWorker({
+        phase: 'done',
+        aiActive: false,
+        activeTenant: '',
+        phaseMessage: `Analisis ulang AI selesai (${analyzedCount} alert diproses).`,
+      });
+      return {
+        ok: true,
+        reanalyzedGroups: targetGroups.length,
+        analyzedAlerts: analyzedCount,
+        snapshot: source === 'batch24h' ? getBatch24hSnapshot() : getQueueSnapshot(),
+      };
+    } catch (err) {
+      setLiveWorker({ phase: 'error', aiActive: false, activeTenant: '', phaseMessage: `Gagal analisis ulang AI: ${err.message}` });
+      throw err;
+    }
+  }
+
   function applyScheduler() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -2440,8 +2787,18 @@ function createTriageEngine(options = {}) {
     const wasEnabled = Boolean(config.workerEnabled);
     const next = cloneJson(config);
     if (patch.workerEnabled !== undefined) next.workerEnabled = Boolean(patch.workerEnabled);
+    if (patch.aiEnabled !== undefined) next.aiEnabled = Boolean(patch.aiEnabled);
     if ((wasEnabled && !next.workerEnabled) || patch.workerEnabled === false) {
       pollEpoch++;
+      if (!state.workerPausedAt) {
+        state.workerPausedAt = new Date().toISOString();
+        saveState();
+      }
+    } else if (!wasEnabled && next.workerEnabled) {
+      if (state.workerPausedAt) {
+        state.workerPausedAt = null;
+        saveState();
+      }
     }
 
     if (patch.wazuh && typeof patch.wazuh === 'object') {
@@ -2483,6 +2840,7 @@ function createTriageEngine(options = {}) {
     config = next;
     saveConfig();
     applyScheduler();
+    broadcastSse('worker', buildWorkerStatusSnapshot());
     broadcastSse('state', getQueueSnapshot());
     return sanitizeConfigForClient(config);
   }
@@ -3547,9 +3905,12 @@ function createTriageEngine(options = {}) {
           return;
         }
 
-        batch24h.job.phase = 'analyzing';
+        const aiOn24 = config.aiEnabled !== false;
+        batch24h.job.phase = aiOn24 ? 'analyzing' : 'grouping';
         batch24h.job.percent = 25;
-        batch24h.job.message = `Menganalisis AI (${totalChunks} batch, ${totalCandidates} kandidat)…`;
+        batch24h.job.message = aiOn24
+          ? `Menganalisis AI (${totalChunks} batch, ${totalCandidates} kandidat)…`
+          : `AI OFF · mengelompokkan ${totalCandidates} kandidat tanpa Ollama…`;
         broadcastSse('batch24h', getBatch24hSnapshot());
 
         const { aborted } = await runAiOnTenantBuckets(byTenantBuckets, {
@@ -3577,7 +3938,9 @@ function createTriageEngine(options = {}) {
         batch24h.job.percent = 100;
         batch24h.job.currentTenant = null;
         batch24h.job.finishedAt = new Date().toISOString();
-        batch24h.job.message = `Selesai · ${batch24h.groups.length} grup dari ${hits.length} alert (Excluded: ${excludedCount})`;
+        batch24h.job.message = aiOn24
+          ? `Selesai · ${batch24h.groups.length} grup dari ${hits.length} alert (Excluded: ${excludedCount})`
+          : `Selesai · ${batch24h.groups.length} grup dari ${hits.length} alert (Excluded: ${excludedCount} · AI OFF)`;
         saveBatch24h();
         broadcastSse('batch24h', getBatch24hSnapshot());
       } catch (err) {
@@ -3790,6 +4153,8 @@ function createTriageEngine(options = {}) {
     evaluateExclusions,
     resolveTenant,
     pollOnce,
+    catchUpGap,
+    reanalyzeUnanalyzed,
     getQueueSnapshot,
     getTriageStats,
     getLiveFeed,

@@ -121,6 +121,11 @@ async function main() {
           return true;
         });
 
+        const tsOrder = String(parsed?.sort?.[0]?.['@timestamp']?.order || '').toLowerCase();
+        if (tsOrder === 'asc') {
+          filtered.sort((a, b) => Date.parse(a._source['@timestamp']) - Date.parse(b._source['@timestamp']));
+        }
+
         const pageHits = parsed?.size === 0
           ? []
           : filtered.slice(0, Number(parsed?.size) > 0 ? Number(parsed.size) : filtered.length);
@@ -1314,7 +1319,145 @@ async function main() {
     assert.equal(afterGroups.length, beforeGroups.length - 1);
     assert.equal(afterGroups.some((g) => g.group_id === targetGrp.group_id), false);
 
-    console.log('ALL_TRIAGE_TESTS_PASSED (20/20)');
+    // 21. Polling Wazuh ON/OFF + AI Ollama ON/OFF independent toggles
+    const wkStart = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'start' } });
+    assert.equal(wkStart.status, 200);
+    assert.equal(wkStart.json.config.workerEnabled, true);
+    assert.equal(wkStart.json.snapshot.workerEnabled, true);
+    const wkPause = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'pause' } });
+    assert.equal(wkPause.status, 200);
+    assert.equal(wkPause.json.config.workerEnabled, false);
+    assert.equal(wkPause.json.snapshot.workerEnabled, false);
+
+    const aiOffRes = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'ai_off' } });
+    assert.equal(aiOffRes.status, 200);
+    assert.equal(aiOffRes.json.config.aiEnabled, false);
+    assert.equal(aiOffRes.json.snapshot.aiEnabled, false);
+
+    const ollamaCallsBeforeOff = ollamaRequests.length;
+    mockWazuhHits.push({
+      _id: 'no-ai-alert-1',
+      _source: {
+        '@timestamp': '2029-11-26T10:30:00.000Z',
+        agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+        rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+        data: { srcip: '198.51.100.77', id: '200', url: '/no-ai-endpoint' },
+        full_log: '198.51.100.77 - - [26/Nov/2029:10:30:00] "POST /no-ai-endpoint HTTP/1.1" 200 120 "-" "curl/8.0"',
+      },
+    });
+    const pollWithAiOff = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:29:50.000Z', to: '2029-11-26T10:30:10.000Z', size: 10 },
+    });
+    assert.equal(pollWithAiOff.status, 200);
+    assert.equal(ollamaRequests.length, ollamaCallsBeforeOff, 'Ollama must NOT be called when aiEnabled is false');
+    const noAiGroup = (pollWithAiOff.json.snapshot?.groups || []).find((g) =>
+      (g.alerts || []).some((a) => a.alert_id === 'no-ai-alert-1'),
+    );
+    assert.ok(noAiGroup, 'Alert pulled while AI is OFF should still be queued');
+    assert.equal(noAiGroup.verdict, 'NEEDS_REVIEW');
+    assert.equal(noAiGroup.unanalyzed, true);
+    assert.match(noAiGroup.ai_reasoning, /Analisis AI sedang OFF/i);
+
+    const aiOnRes = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'ai_on' } });
+    assert.equal(aiOnRes.status, 200);
+    assert.equal(aiOnRes.json.config.aiEnabled, true);
+    assert.equal(aiOnRes.json.snapshot.aiEnabled, true);
+
+    mockWazuhHits.push({
+      _id: 'with-ai-alert-2',
+      _source: {
+        '@timestamp': '2029-11-26T10:31:00.000Z',
+        agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+        rule: { id: '31153', level: 10, description: 'High amount of POST requests.' },
+        data: { srcip: '198.51.100.88', id: '200', url: '/with-ai-endpoint' },
+        full_log: '198.51.100.88 - - [26/Nov/2029:10:31:00] "POST /with-ai-endpoint HTTP/1.1" 200 120 "-" "curl/8.0"',
+      },
+    });
+    const pollWithAiOn = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'poll_now', range: 'custom', from: '2029-11-26T10:30:50.000Z', to: '2029-11-26T10:31:10.000Z', size: 10 },
+    });
+    assert.equal(pollWithAiOn.status, 200);
+    assert.ok(ollamaRequests.length > ollamaCallsBeforeOff, 'Ollama must be called once aiEnabled is toggled back ON');
+
+    // 22. Re-analyze Unanalyzed groups + Chronological catch-up gap when resuming worker
+    const ollamaBeforeReanalyze = ollamaRequests.length;
+    const reanalyzeRes = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: { action: 'reanalyze_ai', source: 'queue', enableAi: true },
+    });
+    assert.equal(reanalyzeRes.status, 200);
+    assert.ok(reanalyzeRes.json.reanalyzedGroups >= 1, 'Expected at least 1 unanalyzed group re-analyzed');
+    assert.ok(ollamaRequests.length > ollamaBeforeReanalyze, 'Re-analyze must call Ollama');
+    const reanalyzedGrp = (reanalyzeRes.json.snapshot?.groups || []).find((g) =>
+      (g.alerts || []).some((a) => a.alert_id === 'no-ai-alert-1'),
+    );
+    assert.ok(reanalyzedGrp, 'Re-analyzed alert must stay in queue');
+    assert.equal(reanalyzedGrp.unanalyzed, false, 'Group should no longer be marked unanalyzed after AI re-analysis');
+
+    // Pause worker, verify workerPausedAt is set, push 3 chronological gap alerts, then resume_catch_up with pageSize=2
+    const pauseGapRes = await httpJson(`${baseUrl}/api/triage/worker`, { method: 'POST', body: { action: 'pause' } });
+    assert.equal(pauseGapRes.status, 200);
+    assert.ok(pauseGapRes.json.snapshot.workerPausedAt, 'workerPausedAt should be recorded when paused');
+
+    const gapBaseMs = Date.now() + 2000;
+    mockWazuhHits.push(
+      {
+        _id: 'gap-alert-1',
+        _source: {
+          '@timestamp': new Date(gapBaseMs).toISOString(),
+          agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+          rule: { id: '31153', level: 10, description: 'Gap alert 1.' },
+          data: { srcip: '198.51.100.91', id: '200', url: '/gap-1' },
+          full_log: '198.51.100.91 - - "GET /gap-1 HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+        },
+      },
+      {
+        _id: 'gap-alert-2',
+        _source: {
+          '@timestamp': new Date(gapBaseMs + 1000).toISOString(),
+          agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+          rule: { id: '31153', level: 10, description: 'Gap alert 2.' },
+          data: { srcip: '198.51.100.92', id: '200', url: '/gap-2' },
+          full_log: '198.51.100.92 - - "GET /gap-2 HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+        },
+      },
+      {
+        _id: 'gap-alert-3',
+        _source: {
+          '@timestamp': new Date(gapBaseMs + 2000).toISOString(),
+          agent: { name: 'srv-instiki', labels: { tenant: 'instiki' } },
+          rule: { id: '31153', level: 10, description: 'Gap alert 3.' },
+          data: { srcip: '198.51.100.93', id: '200', url: '/gap-3' },
+          full_log: '198.51.100.93 - - "GET /gap-3 HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+        },
+      },
+    );
+
+    const queriesBeforeCatchUp = wazuhQueries.length;
+    const catchUpRes = await httpJson(`${baseUrl}/api/triage/worker`, {
+      method: 'POST',
+      body: {
+        action: 'resume_catch_up',
+        sinceIso: new Date(gapBaseMs - 1000).toISOString(),
+        pageSize: 2,
+        maxPages: 5,
+      },
+    });
+    assert.equal(catchUpRes.status, 200);
+    assert.equal(catchUpRes.json.config.workerEnabled, true);
+    assert.equal(catchUpRes.json.snapshot.workerPausedAt, null, 'workerPausedAt should be cleared on resume');
+    assert.ok(catchUpRes.json.pages >= 2, `Expected >= 2 chronological pages for 3 alerts with pageSize=2, got ${catchUpRes.json.pages}`);
+    assert.ok(catchUpRes.json.fetchedCount >= 3);
+    const catchUpQueries = wazuhQueries.slice(queriesBeforeCatchUp);
+    assert.ok(catchUpQueries.some((q) => q.body?.sort?.[0]?.['@timestamp']?.order === 'asc'), 'Catch-up must query chronologically (asc)');
+    const pulledIds = new Set(
+      (catchUpRes.json.snapshot?.groups || []).flatMap((g) => (g.alerts || []).map((a) => a.alert_id)),
+    );
+    assert.ok(pulledIds.has('gap-alert-1') && pulledIds.has('gap-alert-2') && pulledIds.has('gap-alert-3'), 'All 3 gap alerts must be caught up');
+
+    console.log('ALL_TRIAGE_TESTS_PASSED (22/22)');
   } finally {
     await new Promise((r) => server.close(r));
     await new Promise((r) => mockWazuh.close(r));

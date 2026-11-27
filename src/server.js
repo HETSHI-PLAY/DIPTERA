@@ -2768,6 +2768,14 @@ function createServer(options = {}) {
             const cfg = triage.updateConfig({ workerEnabled: false });
             return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
           }
+          if (action === 'ai_on' || action === 'ai_enable') {
+            const cfg = triage.updateConfig({ aiEnabled: true });
+            return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
+          }
+          if (action === 'ai_off' || action === 'ai_disable') {
+            const cfg = triage.updateConfig({ aiEnabled: false });
+            return sendJson(res, method, 200, { ok: true, config: cfg, snapshot: triage.getQueueSnapshot() });
+          }
           if (action === 'poll_now') {
             const resPoll = await triage.pollOnce({
               range: body?.range,
@@ -2777,7 +2785,24 @@ function createServer(options = {}) {
             });
             return sendJson(res, method, 200, resPoll);
           }
-          return sendJson(res, method, 400, { error: 'Aksi worker harus start, pause, atau poll_now' });
+          if (action === 'catch_up' || action === 'resume_catch_up') {
+            const resCatchUp = await triage.catchUpGap({
+              sinceIso: body?.sinceIso,
+              enableWorker: action === 'resume_catch_up' || body?.enableWorker === true,
+              pageSize: body?.pageSize,
+              maxPages: body?.maxPages,
+            });
+            return sendJson(res, method, 200, { ...resCatchUp, config: triage.getConfig() });
+          }
+          if (action === 'reanalyze_ai') {
+            const resReanalyze = await triage.reanalyzeUnanalyzed({
+              source: body?.source || 'queue',
+              enableAi: body?.enableAi === true,
+              groupIds: body?.groupIds,
+            });
+            return sendJson(res, method, 200, { ...resReanalyze, config: triage.getConfig() });
+          }
+          return sendJson(res, method, 400, { error: 'Aksi worker harus start, pause, poll_now, catch_up, resume_catch_up, reanalyze_ai, ai_on, atau ai_off' });
         }
         if (method === 'GET' && pathname === '/api/triage/queue') {
           const snap = triage.getQueueSnapshot({

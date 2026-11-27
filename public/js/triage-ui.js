@@ -1008,6 +1008,7 @@
     if ($('#trg-live-sec')) $('#trg-live-sec').value = String(w.liveRefreshSec ?? 10);
     if ($('#trg-tenant-mapping')) $('#trg-tenant-mapping').value = JSON.stringify(w.tenantMapping || {}, null, 2);
     if ($('#trg-worker-enabled')) $('#trg-worker-enabled').checked = Boolean(cfg.workerEnabled);
+    if ($('#trg-ai-enabled')) $('#trg-ai-enabled').checked = cfg.aiEnabled !== false;
 
     if ($('#trg-ollama-url')) $('#trg-ollama-url').value = o.baseUrl || 'http://localhost:11434';
     if ($('#trg-ollama-model')) $('#trg-ollama-model').value = o.model || '';
@@ -1068,6 +1069,7 @@
 
   function buildOllamaConfigPayload() {
     return {
+      aiEnabled: $('#trg-ai-enabled') ? Boolean($('#trg-ai-enabled').checked) : (triageState.config?.aiEnabled !== false),
       ollama: {
         baseUrl: ($('#trg-ollama-url')?.value || '').trim(),
         model: ($('#trg-ollama-model')?.value || '').trim(),
@@ -1201,16 +1203,32 @@
 
   function updateWorkerButtonsUi() {
     const enabled = Boolean(triageState.snapshot?.workerEnabled ?? triageState.config?.workerEnabled);
+    const aiEnabled = (triageState.snapshot?.aiEnabled ?? triageState.config?.aiEnabled) !== false;
     const ws = triageState.snapshot?.workerStatus || {};
     const running = Boolean(ws.running);
     const phase = String(ws.phase || (running ? 'fetching_wazuh' : 'idle'));
     const manualWaiting = Boolean($('#btn-triage-poll-now')?.disabled);
 
-    const btn = $('#btn-triage-worker-toggle');
-    if (btn) {
-      btn.textContent = enabled ? 'Pause Worker' : 'Start Worker';
-      btn.className = 'btn btn-sm ' + (enabled ? 'amber' : 'ghost');
+    const workerToggleBtn = $('#btn-triage-worker-toggle');
+    if (workerToggleBtn) {
+      workerToggleBtn.classList.toggle('is-on', enabled);
+      workerToggleBtn.setAttribute('aria-checked', String(enabled));
+      if ($('#trg-worker-switch-state')) $('#trg-worker-switch-state').textContent = enabled ? 'ON' : 'OFF';
     }
+    if ($('#trg-worker-enabled')) $('#trg-worker-enabled').checked = enabled;
+
+    for (const [btnSel, stateSel] of [
+      ['#btn-triage-ai-toggle', '#trg-ai-switch-state'],
+      ['#btn-b24-ai-toggle', '#b24-ai-switch-state'],
+    ]) {
+      const aiBtn = $(btnSel);
+      if (aiBtn) {
+        aiBtn.classList.toggle('is-on', aiEnabled);
+        aiBtn.setAttribute('aria-checked', String(aiEnabled));
+        if ($(stateSel)) $(stateSel).textContent = aiEnabled ? 'ON' : 'OFF';
+      }
+    }
+    if ($('#trg-ai-enabled')) $('#trg-ai-enabled').checked = aiEnabled;
 
     const statusEl = $('#trg-worker-pill');
     if (statusEl) {
@@ -1220,13 +1238,15 @@
             ? 'AI Menganalisis…'
             : phase === 'filtering'
               ? 'Menyaring Exclude…'
-              : 'Menarik Wazuh…';
+              : phase === 'grouping'
+                ? 'Mengelompokkan…'
+                : 'Menarik Wazuh…';
         statusEl.className = 'sync-pill';
       } else if (enabled) {
-        statusEl.textContent = 'Worker Aktif';
+        statusEl.textContent = 'Polling ON';
         statusEl.className = 'sync-pill';
       } else {
-        statusEl.textContent = 'Worker Pause';
+        statusEl.textContent = 'Polling OFF';
         statusEl.className = 'sync-pill idle';
       }
     }
@@ -1235,7 +1255,10 @@
     if (aiPill) {
       const ollamaCfg = triageState.config?.ollama || {};
       const aiConfigured = ws.ollamaConfigured ?? Boolean(String(ollamaCfg.baseUrl || '').trim() && String(ollamaCfg.model || '').trim());
-      if (ws.aiActive) {
+      if (!aiEnabled) {
+        aiPill.textContent = 'AI Nonaktif';
+        aiPill.className = 'sync-pill idle';
+      } else if (ws.aiActive) {
         const suffix = ws.activeTenant
           ? ` (${ws.activeTenant})`
           : (ws.totalChunks > 0 ? ` (${ws.processedChunks || 0}/${ws.totalChunks})` : '');
@@ -1328,6 +1351,76 @@
         progBox.hidden = true;
         if (progPct) progPct.textContent = '';
         if (progTrack) progTrack.setAttribute('aria-valuenow', '0');
+      }
+    }
+
+    const wazuhConfigured = ws.wazuhConfigured ?? Boolean(String(triageState.config?.wazuh?.url || '').trim());
+    const pausedAt = triageState.snapshot?.workerPausedAt || ws.workerPausedAt || ws.lastSuccessAt || triageState.snapshot?.watermarkTimestamp || null;
+    const pausedText = pausedAt ? ` sejak ${B.fmtWib(pausedAt)}` : '';
+    const blindspotMsg = `Alert tetap tersimpan di Wazuh Indexer, tetapi belum ditarik ke antrean triage otomatis${pausedText}. Aktifkan & Tarik Gap untuk mengejar alert yang terlewat secara kronologis.`;
+
+    const trgBlindspot = $('#trg-blindspot-banner');
+    if (trgBlindspot) {
+      trgBlindspot.hidden = !wazuhConfigured || enabled;
+      if ($('#trg-blindspot-desc')) $('#trg-blindspot-desc').textContent = blindspotMsg;
+    }
+    const liveBlindspot = $('#live-blindspot-banner');
+    if (liveBlindspot) {
+      liveBlindspot.hidden = !wazuhConfigured || enabled;
+      if ($('#live-blindspot-desc')) $('#live-blindspot-desc').textContent = blindspotMsg;
+    }
+
+    const unanalyzedCount = Number(
+      triageState.snapshot?.unanalyzedCount ??
+      (triageState.snapshot?.groups || []).filter((g) => g.unanalyzed).length ??
+      0,
+    );
+    const trgAiBanner = $('#trg-ai-notice-banner');
+    if (trgAiBanner) {
+      trgAiBanner.hidden = aiEnabled && unanalyzedCount === 0;
+      if ($('#trg-ai-notice-title')) {
+        $('#trg-ai-notice-title').textContent = !aiEnabled
+          ? 'Analisis AI Ollama Sedang OFF'
+          : `${unanalyzedCount} Grup Menunggu Analisis AI`;
+      }
+      if ($('#trg-ai-notice-desc')) {
+        $('#trg-ai-notice-desc').textContent = !aiEnabled
+          ? `Alert tidak hilang — alert baru otomatis masuk ke tab Perlu Ditinjau tanpa skor AI.${unanalyzedCount > 0 ? ` (${unanalyzedCount} grup belum dianalisis AI).` : ''}`
+          : `Ada ${unanalyzedCount} grup di tab Perlu Ditinjau yang ditarik saat AI nonaktif atau gagal dihubungi.`;
+      }
+      const reBtn = $('#btn-trg-reanalyze-ai');
+      if (reBtn) {
+        reBtn.hidden = unanalyzedCount === 0;
+        reBtn.textContent = aiEnabled
+          ? `Analisis Ulang dengan AI (${unanalyzedCount})`
+          : `Aktifkan AI & Analisis Ulang (${unanalyzedCount})`;
+      }
+    }
+
+    const b24Unanalyzed = Number(
+      triageState.batch24h?.snapshot?.unanalyzedCount ??
+      (triageState.batch24h?.snapshot?.groups || []).filter((g) => g.unanalyzed).length ??
+      0,
+    );
+    const b24AiBanner = $('#b24-ai-notice-banner');
+    if (b24AiBanner) {
+      b24AiBanner.hidden = aiEnabled && b24Unanalyzed === 0;
+      if ($('#b24-ai-notice-title')) {
+        $('#b24-ai-notice-title').textContent = !aiEnabled
+          ? 'Analisis AI Ollama Sedang OFF'
+          : `${b24Unanalyzed} Grup 24 Jam Menunggu Analisis AI`;
+      }
+      if ($('#b24-ai-notice-desc')) {
+        $('#b24-ai-notice-desc').textContent = !aiEnabled
+          ? `Hasil Tarik 24 Jam tetap disimpan di tab Perlu Ditinjau tanpa panggilan Ollama.${b24Unanalyzed > 0 ? ` (${b24Unanalyzed} grup belum dianalisis AI).` : ''}`
+          : `Ada ${b24Unanalyzed} grup 24 jam di tab Perlu Ditinjau yang ditarik saat AI nonaktif.`;
+      }
+      const b24ReBtn = $('#btn-b24-reanalyze-ai');
+      if (b24ReBtn) {
+        b24ReBtn.hidden = b24Unanalyzed === 0;
+        b24ReBtn.textContent = aiEnabled
+          ? `Analisis Ulang AI (${b24Unanalyzed})`
+          : `Aktifkan AI & Analisis Ulang (${b24Unanalyzed})`;
       }
     }
   }
@@ -2195,6 +2288,10 @@
   function renderBatch24hView(mergeOnly = false) {
     const bucket = triageState.batch24h;
     const snap = bucket.snapshot;
+    if (snap && typeof snap.aiEnabled === 'boolean' && triageState.config) {
+      triageState.config.aiEnabled = snap.aiEnabled;
+    }
+    updateWorkerButtonsUi();
     updateVerdictCounts('b24', snap, '#tab-triage-24h-count');
     renderBatch24hProgress(snap?.job);
     ensureBatch24hProgressTimer();
@@ -2613,6 +2710,14 @@
           } else {
             triageState.snapshot.workerStatus = { ...triageState.snapshot.workerStatus, ...ws };
           }
+          if (typeof ws.workerEnabled === 'boolean') {
+            triageState.snapshot.workerEnabled = ws.workerEnabled;
+            if (triageState.config) triageState.config.workerEnabled = ws.workerEnabled;
+          }
+          if (typeof ws.aiEnabled === 'boolean') {
+            triageState.snapshot.aiEnabled = ws.aiEnabled;
+            if (triageState.config) triageState.config.aiEnabled = ws.aiEnabled;
+          }
           updateWorkerButtonsUi();
         } catch {}
       });
@@ -2729,7 +2834,9 @@
     });
 
     $('#btn-triage-worker-toggle')?.addEventListener('click', async () => {
+      const btn = $('#btn-triage-worker-toggle');
       const enabled = Boolean(triageState.snapshot?.workerEnabled ?? triageState.config?.workerEnabled);
+      if (btn) btn.disabled = true;
       try {
         const res = await B.apiFetch('/api/triage/worker', {
           method: 'POST',
@@ -2738,11 +2845,110 @@
         if (res.config) triageState.config = res.config;
         if (res.snapshot) triageState.snapshot = res.snapshot;
         renderTriageView();
-        B.toast({ type: 'info', title: enabled ? 'Worker dijeda' : 'Worker dijalankan berkala' });
+        B.toast({
+          type: 'info',
+          title: enabled ? 'Polling Wazuh: OFF' : 'Polling Wazuh: ON',
+          body: enabled ? 'Penarikan alert otomatis dijeda.' : 'Penarikan alert otomatis aktif sesuai jadwal.',
+        });
       } catch (err) {
-        B.toast({ type: 'error', title: 'Gagal mengubah status worker', body: err.message });
+        B.toast({ type: 'error', title: 'Gagal mengubah status Polling Wazuh', body: err.message });
+      } finally {
+        if (btn) btn.disabled = false;
       }
     });
+
+    const handleToggleAi = async (clickedBtn) => {
+      const aiEnabled = (triageState.snapshot?.aiEnabled ?? triageState.config?.aiEnabled) !== false;
+      if (clickedBtn) clickedBtn.disabled = true;
+      try {
+        const res = await B.apiFetch('/api/triage/worker', {
+          method: 'POST',
+          body: JSON.stringify({ action: aiEnabled ? 'ai_off' : 'ai_on' }),
+        });
+        if (res.config) triageState.config = res.config;
+        if (res.snapshot) triageState.snapshot = res.snapshot;
+        updateWorkerButtonsUi();
+        B.toast({
+          type: 'info',
+          title: aiEnabled ? 'AI Ollama: OFF' : 'AI Ollama: ON',
+          body: aiEnabled
+            ? 'Alert ditarik dan dikelompokkan otomatis ke Perlu Ditinjau tanpa memanggil Ollama.'
+            : 'Analisis AI Ollama diaktifkan untuk klasifikasi alert berikutnya.',
+        });
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal mengubah status AI Ollama', body: err.message });
+      } finally {
+        if (clickedBtn) clickedBtn.disabled = false;
+      }
+    };
+    $('#btn-triage-ai-toggle')?.addEventListener('click', (e) => handleToggleAi(e.currentTarget));
+    $('#btn-b24-ai-toggle')?.addEventListener('click', (e) => handleToggleAi(e.currentTarget));
+
+    const handleResumeCatchUp = async (clickedBtn) => {
+      if (clickedBtn) clickedBtn.disabled = true;
+      try {
+        const res = await B.apiFetch('/api/triage/worker', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'resume_catch_up' }),
+        });
+        if (res.config) triageState.config = res.config;
+        if (res.snapshot) triageState.snapshot = res.snapshot;
+        renderTriageView();
+        B.toast({
+          type: 'success',
+          title: 'Polling Wazuh aktif & catch-up selesai',
+          body: res.skipped
+            ? res.reason
+            : `Ditarik ${res.fetchedCount || 0} alert (${res.pages || 0} halaman) · Excluded ${res.excludedCount || 0} · Diproses ${res.analyzedCount || 0}`,
+        });
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal melakukan catch-up gap', body: err.message });
+      } finally {
+        if (clickedBtn) clickedBtn.disabled = false;
+        updateWorkerButtonsUi();
+      }
+    };
+    $('#btn-trg-resume-catchup')?.addEventListener('click', (e) => handleResumeCatchUp(e.currentTarget));
+    $('#btn-live-resume-catchup')?.addEventListener('click', (e) => handleResumeCatchUp(e.currentTarget));
+
+    $('#btn-trg-goto-review')?.addEventListener('click', () => {
+      triageState.verdictFilter = 'NEEDS_REVIEW';
+      renderTriageView();
+    });
+    $('#btn-b24-goto-review')?.addEventListener('click', () => {
+      triageState.batch24h.verdictFilter = 'NEEDS_REVIEW';
+      renderBatch24hView();
+    });
+
+    const handleReanalyzeAi = async (source, clickedBtn) => {
+      if (clickedBtn) clickedBtn.disabled = true;
+      try {
+        const res = await B.apiFetch('/api/triage/worker', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'reanalyze_ai', source, enableAi: true }),
+        });
+        if (res.config) triageState.config = res.config;
+        if (source === 'batch24h') {
+          if (res.snapshot) triageState.batch24h.snapshot = res.snapshot;
+          renderBatch24hView();
+        } else {
+          if (res.snapshot) triageState.snapshot = res.snapshot;
+          renderTriageView();
+        }
+        B.toast({
+          type: 'success',
+          title: 'Analisis ulang AI selesai',
+          body: `${res.reanalyzedGroups || 0} grup (${res.analyzedAlerts || 0} alert) dianalisis ulang dengan Ollama.`,
+        });
+      } catch (err) {
+        B.toast({ type: 'error', title: 'Gagal analisis ulang AI', body: err.message });
+      } finally {
+        if (clickedBtn) clickedBtn.disabled = false;
+        updateWorkerButtonsUi();
+      }
+    };
+    $('#btn-trg-reanalyze-ai')?.addEventListener('click', (e) => handleReanalyzeAi('queue', e.currentTarget));
+    $('#btn-b24-reanalyze-ai')?.addEventListener('click', (e) => handleReanalyzeAi('batch24h', e.currentTarget));
 
     wireDoubleConfirm($('#btn-triage-dismiss-fp'), 'Klik lagi untuk Hapus FP', async () => {
       try {

@@ -10,9 +10,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261127f" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261127f" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261127f" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261127h" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261127h" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261127h" />
 </head>
 
 <body>
@@ -513,6 +513,12 @@
                 <h2 class="settings-title">Konfigurasi Ollama AI &amp; Parameter Inferensi</h2>
                 <p class="field-hint">Atur model lokal, context window (<code class="mono">num_ctx</code>), batas output (<code class="mono">num_predict</code>), sampling, batch size, dan System Prompt khusus AI Triage.</p>
               </div>
+              <div class="settings-head-actions">
+                <label class="check">
+                  <input type="checkbox" id="trg-ai-enabled" checked />
+                  <span>Aktifkan analisis AI Ollama pada alert</span>
+                </label>
+              </div>
             </div>
 
             <div class="settings-grid">
@@ -853,7 +859,17 @@
         <!-- VIEW 5: AI Triage Queue -->
         <section id="view-triage" class="triage-view" role="tabpanel" aria-labelledby="tab-triage" hidden>
           <div class="triage-status-bar">
-            <span class="sync-pill offline" id="trg-worker-pill">Worker Pause</span>
+            <button type="button" role="switch" aria-checked="false" class="triage-switch" id="btn-triage-worker-toggle" data-kind="worker" title="Aktifkan atau matikan polling otomatis alert Wazuh">
+              <span class="triage-switch-label">Polling Wazuh</span>
+              <span class="triage-switch-track" aria-hidden="true"><span class="triage-switch-thumb"></span></span>
+              <span class="triage-switch-state" id="trg-worker-switch-state">OFF</span>
+            </button>
+            <button type="button" role="switch" aria-checked="true" class="triage-switch is-on" id="btn-triage-ai-toggle" data-kind="ai" title="Aktifkan atau matikan analisis AI Ollama">
+              <span class="triage-switch-label">AI Ollama</span>
+              <span class="triage-switch-track" aria-hidden="true"><span class="triage-switch-thumb"></span></span>
+              <span class="triage-switch-state" id="trg-ai-switch-state">ON</span>
+            </button>
+            <span class="sync-pill offline" id="trg-worker-pill">Polling OFF</span>
             <span class="sync-pill offline" id="trg-ai-pill">AI Standby</span>
             <span class="field-hint" id="trg-watermark-info">Watermark antrean: Awal</span>
             <span class="spacer"></span>
@@ -865,7 +881,6 @@
               <option value="custom">Rentang Kustom…</option>
             </select>
             <button type="button" class="btn primary btn-sm" id="btn-triage-poll-now">Tarik Sekarang</button>
-            <button type="button" class="btn ghost btn-sm" id="btn-triage-worker-toggle">Start Worker</button>
             <button type="button" class="btn ghost btn-sm" id="btn-triage-dismiss-fp">Hapus Semua False Positive</button>
             <button type="button" class="btn ghost btn-sm" id="btn-triage-reset">Reset Watermark</button>
             <button type="button" class="btn danger btn-sm" id="btn-triage-purge">Hapus Database Triage</button>
@@ -877,6 +892,27 @@
             <span class="triage-tel-item"><strong>Excluded:</strong> <span id="trg-tel-excluded" class="mono">0</span></span>
             <span class="triage-tel-item"><strong>Dianalisis AI:</strong> <span id="trg-tel-analyzed" class="mono">0</span></span>
             <span class="triage-tel-item"><strong>Model AI:</strong> <span id="trg-tel-model" class="mono">—</span></span>
+          </div>
+
+          <div id="trg-blindspot-banner" class="triage-notice-banner is-warn" role="status" hidden>
+            <div class="triage-notice-body">
+              <strong class="triage-notice-title">Polling Wazuh Otomatis Sedang OFF (Potensi Blind Spot)</strong>
+              <span class="triage-notice-desc" id="trg-blindspot-desc">Alert tetap aman di Wazuh Indexer, namun belum masuk ke antrean selama Polling OFF.</span>
+            </div>
+            <div class="triage-notice-actions">
+              <button type="button" class="btn amber btn-sm" id="btn-trg-resume-catchup">Aktifkan &amp; Tarik Gap</button>
+            </div>
+          </div>
+
+          <div id="trg-ai-notice-banner" class="triage-notice-banner is-info" role="status" hidden>
+            <div class="triage-notice-body">
+              <strong class="triage-notice-title" id="trg-ai-notice-title">Analisis AI Ollama Sedang OFF</strong>
+              <span class="triage-notice-desc" id="trg-ai-notice-desc">Alert tidak hilang — alert baru dikelompokkan ke tab Perlu Ditinjau tanpa skor AI.</span>
+            </div>
+            <div class="triage-notice-actions">
+              <button type="button" class="btn ghost btn-sm" id="btn-trg-goto-review">Lihat Perlu Ditinjau</button>
+              <button type="button" class="btn accent btn-sm" id="btn-trg-reanalyze-ai" hidden>Analisis Ulang dengan AI</button>
+            </div>
           </div>
 
           <div id="trg-poll-progress" class="triage-progress-box" hidden>
@@ -957,6 +993,11 @@
         <section id="view-triage-24h" class="triage-view" role="tabpanel" aria-labelledby="tab-triage-24h" hidden>
           <div class="triage-status-bar">
             <span class="sync-pill offline" id="b24-status-pill">Siap</span>
+            <button type="button" role="switch" aria-checked="true" class="triage-switch is-on" id="btn-b24-ai-toggle" data-kind="ai" title="Aktifkan atau matikan analisis AI Ollama">
+              <span class="triage-switch-label">AI Ollama</span>
+              <span class="triage-switch-track" aria-hidden="true"><span class="triage-switch-thumb"></span></span>
+              <span class="triage-switch-state" id="b24-ai-switch-state">ON</span>
+            </button>
             <select id="b24-range" class="triage-range-select" aria-label="Rentang waktu tarik batch">
               <option value="24h" selected>24 Jam Terakhir</option>
               <option value="12h">12 Jam Terakhir</option>
@@ -996,6 +1037,17 @@
               <div class="triage-progress-fill" id="b24-progress-fill"></div>
             </div>
             <div class="triage-progress-meta" id="b24-progress-meta">Ditarik: 0 · Excluded: 0 · Batch AI: 0/0</div>
+          </div>
+
+          <div id="b24-ai-notice-banner" class="triage-notice-banner is-info" role="status" hidden>
+            <div class="triage-notice-body">
+              <strong class="triage-notice-title" id="b24-ai-notice-title">Analisis AI Ollama Sedang OFF</strong>
+              <span class="triage-notice-desc" id="b24-ai-notice-desc">Hasil Tarik 24 Jam dikelompokkan otomatis ke tab Perlu Ditinjau tanpa Ollama.</span>
+            </div>
+            <div class="triage-notice-actions">
+              <button type="button" class="btn ghost btn-sm" id="btn-b24-goto-review">Lihat Perlu Ditinjau</button>
+              <button type="button" class="btn accent btn-sm" id="btn-b24-reanalyze-ai" hidden>Analisis Ulang AI</button>
+            </div>
           </div>
 
           <div class="approval-toolbar">
@@ -1069,6 +1121,16 @@
             <button type="button" class="btn ghost btn-sm" id="btn-live-fields">Kolom Field</button>
             <button type="button" class="btn ghost btn-sm" id="btn-live-refresh">Segarkan Live</button>
             <button type="button" class="btn danger btn-sm" id="btn-live-clear">Kosongkan</button>
+          </div>
+
+          <div id="live-blindspot-banner" class="triage-notice-banner is-warn" role="status" hidden>
+            <div class="triage-notice-body">
+              <strong class="triage-notice-title">Polling Wazuh Otomatis Sedang OFF</strong>
+              <span class="triage-notice-desc" id="live-blindspot-desc">Alert mentah tetap tampil di Live Wazuh, tetapi antrean AI Triage tidak menarik event baru otomatis.</span>
+            </div>
+            <div class="triage-notice-actions">
+              <button type="button" class="btn amber btn-sm" id="btn-live-resume-catchup">Aktifkan &amp; Tarik Gap</button>
+            </div>
           </div>
 
           <div id="live-custom-range-bar" class="triage-custom-range-bar" hidden>
@@ -1589,12 +1651,12 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261127f"></script>
-  <script src="/js/numbering.js?v=20261127f"></script>
-  <script src="/js/extract.js?v=20261127f"></script>
-  <script src="/js/markdown.js?v=20261127f"></script>
-  <script src="/js/app.js?v=20261127f"></script>
-  <script src="/js/triage-ui.js?v=20261127f"></script>
+  <script src="/config.js?v=20261127h"></script>
+  <script src="/js/numbering.js?v=20261127h"></script>
+  <script src="/js/extract.js?v=20261127h"></script>
+  <script src="/js/markdown.js?v=20261127h"></script>
+  <script src="/js/app.js?v=20261127h"></script>
+  <script src="/js/triage-ui.js?v=20261127h"></script>
 </body>
 
 </html>
