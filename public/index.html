@@ -6,10 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="Diptera unified operational console for ASOC Alpha Reporter and SOC Charlie Reporter." />
-  <title>Diptera: ASOC (Alpha Reporter)</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261126n" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261126n" />
-  <link rel="stylesheet" href="/css/tenants.css?v=20261126n" />
+  <title>Diptera — ASOC (Alpha Reporter)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261127f" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261127f" />
+  <link rel="stylesheet" href="/css/tenants.css?v=20261127f" />
 </head>
 
 <body>
@@ -32,13 +35,13 @@
       <form id="login-form" class="auth-form" novalidate>
         <div class="field">
           <label class="field-label" for="login-username">Username</label>
-          <input type="text" id="login-username" name="username" autocomplete="username" placeholder="Masukkan username" required spellcheck="false" />
+          <input type="text" id="login-username" name="username" autocomplete="username" placeholder="Username" required spellcheck="false" />
         </div>
 
         <div class="field">
           <label class="field-label" for="login-password">Password</label>
           <div class="pw-input-wrap">
-            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Masukkan password" required />
+            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="Password" required />
             <button type="button" id="btn-toggle-login-pw" class="btn ghost btn-xs pw-toggle-btn">Lihat</button>
           </div>
         </div>
@@ -104,21 +107,36 @@
 
     <aside id="app-sidebar" class="sidebar" aria-label="Navigasi utama">
       <div class="sidebar-section">
-        <div class="sidebar-heading sidebar-heading-accent">OPERATIONS</div>
-        <nav class="sidebar-nav" role="tablist" aria-label="Tampilan workspace">
-          <button class="sidebar-item active" id="tab-queue" type="button" role="tab" aria-selected="true" aria-controls="view-queue">
-            <span>Antrian</span>
+        <div class="sidebar-heading sidebar-heading-accent">Operasi</div>
+        <nav class="sidebar-nav" aria-label="Operasi utama">
+          <button class="sidebar-item active" id="tab-queue" type="button" aria-current="page">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+                <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+              </svg>
+              <span>Antrian</span>
+            </span>
             <span class="tab-count" id="tab-queue-count">1</span>
           </button>
-          <button class="sidebar-item" id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="view-history">
-            <span id="tab-history-label">Riwayat</span>
+          <button class="sidebar-item" id="tab-history" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <polyline points="12 7 12 12 15.5 14" />
+              </svg>
+              <span id="tab-history-label">Riwayat</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-approvals" type="button" role="tab" aria-selected="false" aria-controls="view-approvals">
-            <span>Approval</span>
+          <button class="sidebar-item" id="tab-approvals" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              <span>Approval</span>
+            </span>
             <span class="tab-count" id="tab-approvals-count">0</span>
-          </button>
-          <button class="sidebar-item active" id="nav-reporting" type="button" aria-pressed="true">
-            <span>Reporting</span>
           </button>
         </nav>
       </div>
@@ -126,47 +144,114 @@
       <hr class="sidebar-divider" />
 
       <div class="sidebar-section">
-        <div class="sidebar-heading sidebar-heading-accent">TRIAGE</div>
-        <div class="sidebar-nav">
-          <button class="sidebar-item" id="tab-triage" type="button" role="tab" aria-selected="false" aria-controls="view-triage">
-            <span>AI Triage</span>
+        <div class="sidebar-heading sidebar-heading-accent">Deteksi &amp; Triage</div>
+        <nav class="sidebar-nav" aria-label="Navigasi Deteksi dan Triage">
+          <button class="sidebar-item" id="tab-triage" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3 4 7v5c0 5 3.5 8.5 8 9 4.5-.5 8-4 8-9V7l-8-4z" />
+                <path d="M12 8v4" />
+                <path d="M12 16h.01" />
+              </svg>
+              <span>AI Triage</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-triage-24h" type="button" role="tab" aria-selected="false" aria-controls="view-triage-24h">
-            <span>Tarik 24 Jam</span>
+          <button class="sidebar-item" id="tab-triage-24h" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>Tarik 24 Jam</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-live-feed" type="button" role="tab" aria-selected="false" aria-controls="view-live-feed">
-            <span>Live Wazuh</span>
+          <button class="sidebar-item" id="tab-live-feed" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="22 12 18 12 15 20 9 4 6 12 2 12" />
+              </svg>
+              <span>Live Wazuh</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-triage-history" type="button" role="tab" aria-selected="false" aria-controls="view-triage-history">
-            <span>Audit Triage</span>
+          <button class="sidebar-item" id="tab-triage-history" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+                <rect x="9" y="3" width="6" height="4" rx="1" />
+                <path d="M9 12h6M9 16h4" />
+              </svg>
+              <span>Audit Triage</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-triage-exclusions" type="button" role="tab" aria-selected="false" aria-controls="view-triage-exclusions">
-            <span>Daftar Exclude</span>
+          <button class="sidebar-item" id="tab-triage-exclusions" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+              <span>Daftar Exclude</span>
+            </span>
           </button>
-          <button class="sidebar-item" id="tab-triage-stats" type="button" role="tab" aria-selected="false" aria-controls="view-triage-stats">
-            <span>Statistik Triage</span>
+          <button class="sidebar-item" id="tab-triage-stats" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="18" y1="20" x2="18" y2="10" />
+                <line x1="12" y1="20" x2="12" y2="4" />
+                <line x1="6" y1="20" x2="6" y2="14" />
+              </svg>
+              <span>Statistik Triage</span>
+            </span>
           </button>
-        </div>
+        </nav>
       </div>
 
       <hr class="sidebar-divider" />
 
       <div class="sidebar-section">
-        <div class="sidebar-heading">SYSTEM</div>
-        <div class="sidebar-nav">
-          <button class="sidebar-item" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="view-settings">
-            <span>Pengaturan</span>
+        <div class="sidebar-heading">Sistem</div>
+        <nav class="sidebar-nav" aria-label="Pengaturan dan sistem">
+          <button class="sidebar-item" id="tab-settings" type="button">
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="4" y1="21" x2="4" y2="14" />
+                <line x1="4" y1="10" x2="4" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12" y2="3" />
+                <line x1="20" y1="21" x2="20" y2="16" />
+                <line x1="20" y1="12" x2="20" y2="3" />
+                <line x1="1" y1="14" x2="7" y2="14" />
+                <line x1="9" y1="8" x2="15" y2="8" />
+                <line x1="17" y1="16" x2="23" y2="16" />
+              </svg>
+              <span>Pengaturan</span>
+            </span>
           </button>
           <button class="sidebar-item" id="nav-users" type="button" hidden>
-            <span>Manajemen User</span>
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span>Manajemen User</span>
+            </span>
           </button>
           <a class="sidebar-item sidebar-link" id="link-form" href="#" target="_blank" rel="noopener">
-            <span>Form n8n</span>
+            <span class="sidebar-item-main">
+              <svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+              <span>Form n8n</span>
+            </span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M7 17L17 7M9 7h8v8" />
             </svg>
           </a>
-        </div>
+        </nav>
       </div>
     </aside>
 
@@ -371,12 +456,12 @@
 
               <label class="field">
                 <span class="field-label">Password Read-Only Wazuh</span>
-                <input type="password" id="trg-wazuh-pass" placeholder="Masukkan password read-only" autocomplete="new-password" />
+                <input type="password" id="trg-wazuh-pass" placeholder="Password read-only" autocomplete="new-password" />
               </label>
 
               <div class="field">
                 <span class="field-label">Preset Severity / Rule Level</span>
-                <select id="trg-sev-preset">
+                <select id="trg-sev-preset" aria-label="Preset Severity / Rule Level">
                   <option value="medium_critical">Medium – Critical (Level &gt;= 7, Default)</option>
                   <option value="high_critical">High – Critical (Level &gt;= 12)</option>
                   <option value="custom">Custom Range</option>
@@ -438,7 +523,7 @@
 
               <div class="field">
                 <span class="field-label">Model Ollama</span>
-                <input type="text" id="trg-ollama-model" list="trg-ollama-models-list" placeholder="hf.co/Triago/NVIDIA-Nemotron-Nano-12B-v2-Q8_0-GGUF:Q8_0" spellcheck="false" />
+                <input type="text" id="trg-ollama-model" list="trg-ollama-models-list" placeholder="Nama model Ollama" aria-label="Model Ollama" spellcheck="false" />
                 <datalist id="trg-ollama-models-list"></datalist>
                 <div class="settings-inline">
                   <button type="button" id="btn-test-ollama" class="btn ghost btn-xs">Test Koneksi &amp; Muat Model</button>
@@ -446,54 +531,61 @@
                 <div id="trg-ollama-test-msg" class="um-msg" hidden></div>
               </div>
 
-              <label class="field">
-                <span class="field-label">Context Window (<code class="mono">num_ctx</code>)</span>
-                <input type="number" id="trg-ollama-num-ctx" min="2048" max="131072" step="512" />
-                <span class="field-hint">Ukuran konteks prompt + sampel log (default 12288; naikkan jika log panjang, turunkan jika VRAM ketat).</span>
-              </label>
-
-              <label class="field">
-                <span class="field-label">Max Output Token (<code class="mono">num_predict</code>)</span>
-                <input type="number" id="trg-ollama-num-predict" min="256" max="32768" step="128" />
-                <span class="field-hint">Batas token JSON jawaban per panggilan (default 4096 agar tidak terpotong di tengah).</span>
-              </label>
-
-              <div class="field">
-                <span class="field-label">Parameter Sampling</span>
-                <div class="settings-inline">
-                  <label class="field-hint" for="trg-ollama-temp">Temp:</label>
-                  <input type="number" id="trg-ollama-temp" class="trg-num-sm" min="0" max="2" step="0.05" />
-                  <label class="field-hint" for="trg-ollama-top-p">Top P:</label>
-                  <input type="number" id="trg-ollama-top-p" class="trg-num-sm" min="0.05" max="1" step="0.05" />
-                  <label class="field-hint" for="trg-ollama-top-k">Top K:</label>
-                  <input type="number" id="trg-ollama-top-k" class="trg-num-sm" min="1" max="200" step="1" />
-                </div>
-                <div class="settings-inline">
-                  <label class="field-hint" for="trg-ollama-repeat-penalty">Repeat Penalty:</label>
-                  <input type="number" id="trg-ollama-repeat-penalty" class="trg-num-sm" min="0.8" max="2" step="0.05" />
-                </div>
-              </div>
-
-              <div class="field">
-                <span class="field-label">Batch, Timeout &amp; Keep Alive</span>
-                <div class="settings-inline">
-                  <label class="field-hint" for="trg-ollama-batch-size">Micro-Batch:</label>
-                  <input type="number" id="trg-ollama-batch-size" class="trg-num-sm" min="1" max="30" step="1" title="Jumlah kandidat unik per 1 call Ollama" />
-                  <label class="field-hint" for="trg-ollama-timeout">Timeout (dtk):</label>
-                  <input type="number" id="trg-ollama-timeout" class="trg-num-sm" min="15" max="600" step="5" />
-                </div>
-                <div class="settings-inline">
-                  <label class="field-hint" for="trg-ollama-keep-alive">Keep Alive:</label>
-                  <input type="text" id="trg-ollama-keep-alive" class="trg-num-sm" placeholder="2m" spellcheck="false" title="Durasi model ditahan di VRAM (mis. 2m, 5m, 0, -1)" />
-                </div>
-              </div>
-
               <div class="field field-full">
-                <span class="field-label">Perilaku &amp; Format Respons Model</span>
-                <div class="checks">
-                  <label class="check"><input type="checkbox" id="trg-ollama-think" /> <span>Aktifkan mode Thinking / Reasoning (<code class="mono">think: true</code> — lebih lambat, matikan untuk kecepatan maksimal)</span></label>
-                  <label class="check"><input type="checkbox" id="trg-ollama-json-schema" /> <span>Gunakan Structured JSON Schema ketat (<code class="mono">format: schema</code> — matikan jika model GGUF sering gagal JSON)</span></label>
-                </div>
+                <details class="advanced-details">
+                  <summary class="advanced-summary">Parameter Inferensi Lanjutan (VRAM &amp; Sampling)</summary>
+                  <div class="settings-grid advanced-field-body">
+                    <label class="field">
+                      <span class="field-label">Context Window (<code class="mono">num_ctx</code>)</span>
+                      <input type="number" id="trg-ollama-num-ctx" min="2048" max="131072" step="512" />
+                      <span class="field-hint">Ukuran konteks prompt + sampel log (default 12288).</span>
+                    </label>
+
+                    <label class="field">
+                      <span class="field-label">Max Output Token (<code class="mono">num_predict</code>)</span>
+                      <input type="number" id="trg-ollama-num-predict" min="256" max="32768" step="128" />
+                      <span class="field-hint">Batas token JSON jawaban per panggilan (default 4096).</span>
+                    </label>
+
+                    <div class="field">
+                      <span class="field-label">Parameter Sampling</span>
+                      <div class="settings-inline">
+                        <label class="field-hint" for="trg-ollama-temp">Temp:</label>
+                        <input type="number" id="trg-ollama-temp" class="trg-num-sm" min="0" max="2" step="0.05" />
+                        <label class="field-hint" for="trg-ollama-top-p">Top P:</label>
+                        <input type="number" id="trg-ollama-top-p" class="trg-num-sm" min="0.05" max="1" step="0.05" />
+                        <label class="field-hint" for="trg-ollama-top-k">Top K:</label>
+                        <input type="number" id="trg-ollama-top-k" class="trg-num-sm" min="1" max="200" step="1" />
+                      </div>
+                      <div class="settings-inline">
+                        <label class="field-hint" for="trg-ollama-repeat-penalty">Repeat Penalty:</label>
+                        <input type="number" id="trg-ollama-repeat-penalty" class="trg-num-sm" min="0.8" max="2" step="0.05" />
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <span class="field-label">Batch, Timeout &amp; Keep Alive</span>
+                      <div class="settings-inline">
+                        <label class="field-hint" for="trg-ollama-batch-size">Micro-Batch:</label>
+                        <input type="number" id="trg-ollama-batch-size" class="trg-num-sm" min="1" max="30" step="1" title="Jumlah kandidat unik per 1 call Ollama" />
+                        <label class="field-hint" for="trg-ollama-timeout">Timeout (dtk):</label>
+                        <input type="number" id="trg-ollama-timeout" class="trg-num-sm" min="15" max="600" step="5" />
+                      </div>
+                      <div class="settings-inline">
+                        <label class="field-hint" for="trg-ollama-keep-alive">Keep Alive:</label>
+                        <input type="text" id="trg-ollama-keep-alive" class="trg-num-sm" placeholder="2m" spellcheck="false" title="Durasi model ditahan di VRAM (mis. 2m, 5m, 0, -1)" />
+                      </div>
+                    </div>
+
+                    <div class="field field-full">
+                      <span class="field-label">Perilaku &amp; Format Respons Model</span>
+                      <div class="checks">
+                        <label class="check"><input type="checkbox" id="trg-ollama-think" /> <span>Aktifkan mode Thinking / Reasoning (<code class="mono">think: true</code> — lebih lambat)</span></label>
+                        <label class="check"><input type="checkbox" id="trg-ollama-json-schema" /> <span>Gunakan Structured JSON Schema ketat (<code class="mono">format: schema</code>)</span></label>
+                      </div>
+                    </div>
+                  </div>
+                </details>
               </div>
 
               <div class="field field-full">
@@ -651,7 +743,7 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="hist-search" placeholder="Cari Case Name, #Case ID, atau nomor tiket…" />
+              <input type="search" id="hist-search" placeholder="Cari Case / Tiket" aria-label="Cari di Riwayat" />
             </div>
             <select id="hist-filter-tenant" aria-label="Filter tenant">
               <option value="">Semua Tenant</option>
@@ -716,7 +808,7 @@
                   <circle cx="11" cy="11" r="7" />
                   <path d="M20 20l-3.5-3.5" />
                 </svg>
-                <input type="search" id="appr-search" placeholder="Cari Case Name, #Case ID, tenant, workflow…" />
+                <input type="search" id="appr-search" placeholder="Cari Case / Tenant" aria-label="Cari di Approval Center" />
               </div>
 
               <select id="appr-filter-ws" aria-label="Filter workspace approval">
@@ -772,8 +864,8 @@
               <option value="watermark">Sejak Watermark</option>
               <option value="custom">Rentang Kustom…</option>
             </select>
-            <button type="button" class="btn accent btn-sm" id="btn-triage-poll-now">Tarik Sekarang</button>
-            <button type="button" class="btn accent btn-sm" id="btn-triage-worker-toggle">Start Worker</button>
+            <button type="button" class="btn primary btn-sm" id="btn-triage-poll-now">Tarik Sekarang</button>
+            <button type="button" class="btn ghost btn-sm" id="btn-triage-worker-toggle">Start Worker</button>
             <button type="button" class="btn ghost btn-sm" id="btn-triage-dismiss-fp">Hapus Semua False Positive</button>
             <button type="button" class="btn ghost btn-sm" id="btn-triage-reset">Reset Watermark</button>
             <button type="button" class="btn danger btn-sm" id="btn-triage-purge">Hapus Database Triage</button>
@@ -792,7 +884,7 @@
               <strong id="trg-poll-progress-msg">Menarik dan menganalisis alert…</strong>
               <span id="trg-poll-progress-pct" class="mono field-hint"></span>
             </div>
-            <div class="triage-progress-track" role="progressbar" aria-label="Proses penarikan AI Triage">
+            <div class="triage-progress-track" id="trg-poll-progress-track" role="progressbar" aria-label="Proses penarikan AI Triage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <div id="trg-poll-progress-fill" class="triage-progress-fill is-indeterminate"></div>
             </div>
           </div>
@@ -834,7 +926,7 @@
                   <circle cx="11" cy="11" r="7" />
                   <path d="M20 20l-3.5-3.5" />
                 </svg>
-                <input type="search" id="trg-search" placeholder="Cari judul insiden, IP, agent, Rule ID, atau Alert ID…" />
+                <input type="search" id="trg-search" placeholder="Cari insiden, IP, Rule ID" aria-label="Cari di antrean AI Triage" />
               </div>
               <select id="trg-filter-tenant" aria-label="Filter tenant AI triage">
                 <option value="">Semua Tenant</option>
@@ -850,6 +942,12 @@
           <div id="triage-groups-list" class="approvals-list" aria-live="polite"></div>
 
           <div id="triage-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3 4 7v5c0 5 3.5 8.5 8 9 4.5-.5 8-4 8-9V7l-8-4z" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
             <h2>Belum ada grup alert di antrean triage</h2>
             <p>Konfigurasikan Wazuh Indexer &amp; Ollama di Pengaturan lalu tekan Tarik Sekarang atau aktifkan Worker.</p>
           </div>
@@ -867,9 +965,12 @@
               <option value="custom">Rentang Kustom…</option>
             </select>
             <input type="text" id="b24-target-tenant" class="triage-inline-input" placeholder="Semua tenant (opsional)" aria-label="Filter tenant sebelum tarik 24 jam" spellcheck="false" />
-            <input type="number" id="b24-size" class="trg-num-sm" min="10" max="1000" value="500" title="Maks alert ditarik (10-1000)" aria-label="Maks alert ditarik" />
+            <label class="triage-inline-field" for="b24-size" title="Maks alert ditarik (10-1000)">
+              <span>Maks</span>
+              <input type="number" id="b24-size" min="10" max="1000" value="500" aria-label="Maks alert ditarik" />
+            </label>
             <span class="spacer"></span>
-            <button type="button" class="btn accent btn-sm" id="btn-b24-run">Mulai Tarik 24 Jam</button>
+            <button type="button" class="btn primary btn-sm" id="btn-b24-run">Mulai Tarik 24 Jam</button>
             <button type="button" class="btn danger btn-sm" id="btn-b24-cancel" hidden>Batalkan</button>
             <button type="button" class="btn ghost btn-sm" id="btn-b24-dismiss-fp">Hapus False Positive</button>
             <button type="button" class="btn danger btn-sm" id="btn-b24-clear">Kosongkan 24 Jam</button>
@@ -891,7 +992,7 @@
               <strong id="b24-progress-msg">Menyiapkan penarikan 24 jam terakhir…</strong>
               <span class="mono" id="b24-progress-pct">0%</span>
             </div>
-            <div class="triage-progress-track" id="b24-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="triage-progress-track" id="b24-progress-track" role="progressbar" aria-label="Proses tarik alert 24 jam" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <div class="triage-progress-fill" id="b24-progress-fill"></div>
             </div>
             <div class="triage-progress-meta" id="b24-progress-meta">Ditarik: 0 · Excluded: 0 · Batch AI: 0/0</div>
@@ -919,7 +1020,7 @@
                   <circle cx="11" cy="11" r="7" />
                   <path d="M20 20l-3.5-3.5" />
                 </svg>
-                <input type="search" id="b24-search" placeholder="Cari judul insiden, IP, agent, Rule ID, atau Alert ID…" />
+                <input type="search" id="b24-search" placeholder="Cari insiden, IP, Rule ID" aria-label="Cari di tarik 24 jam" />
               </div>
               <select id="b24-filter-tenant" aria-label="Filter tenant batch 24 jam">
                 <option value="">Semua Tenant</option>
@@ -935,6 +1036,13 @@
           <div id="b24-groups-list" class="approvals-list" aria-live="polite"></div>
 
           <div id="b24-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </div>
             <h2>Belum ada data di menu Tarik 24 Jam</h2>
             <p>Pilih rentang waktu lalu tekan Mulai Tarik 24 Jam. Hasil penarikan di sini terpisah dari antrean AI Triage utama.</p>
           </div>
@@ -987,7 +1095,7 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="live-search" placeholder="Cari Rule ID, deskripsi, path, IP sumber, atau full_log…" />
+              <input type="search" id="live-search" placeholder="Cari Rule ID, path, IP, log" aria-label="Cari di Live Wazuh" />
             </div>
             <select id="live-filter-tenant" aria-label="Filter tenant live feed">
               <option value="">Semua Tenant</option>
@@ -1012,6 +1120,11 @@
           </div>
 
           <div id="live-feed-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12 15 20 9 4 6 12 2 12" />
+              </svg>
+            </div>
             <h2>Tidak ada event dari Wazuh Indexer</h2>
             <p>Pastikan koneksi Wazuh Indexer terkonfigurasi atau ubah rentang waktu lalu tekan Segarkan Live.</p>
           </div>
@@ -1025,7 +1138,7 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="trghist-search" placeholder="Cari Wazuh Alert ID, IRIS Case ID, Tenant, IP sumber, atau Agent…" />
+              <input type="search" id="trghist-search" placeholder="Cari Alert ID, Case ID, Tenant" aria-label="Cari di Audit Triage" />
             </div>
             <select id="trghist-filter-tenant" aria-label="Filter tenant audit triage">
               <option value="">Semua Tenant</option>
@@ -1037,6 +1150,13 @@
           <div id="triage-history-list" class="approvals-list" aria-live="polite"></div>
 
           <div id="triage-history-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+                <rect x="9" y="3" width="6" height="4" rx="1" />
+                <path d="M9 12h6M9 16h4" />
+              </svg>
+            </div>
             <h2>Belum ada riwayat case dari AI Triage</h2>
             <p>Setiap case yang dibuat lewat Buat Case atau Kirim ke Form akan mencatat daftar Wazuh Alert ID di sini.</p>
           </div>
@@ -1086,32 +1206,37 @@
               <span class="field-label">Pola (pakai * untuk nilai dinamis)</span>
               <input type="text" id="ex-new-pattern" placeholder="/app/item/*/status atau *.log" spellcheck="false" />
             </label>
-            <label class="triage-range-field triage-range-field-sm">
-              <span class="field-label">Kunci Rule ID (AND)</span>
-              <input type="text" id="ex-new-rule-ids" placeholder="31153, 31154" spellcheck="false" />
-            </label>
-            <label class="triage-range-field triage-range-field-sm">
-              <span class="field-label">Kunci HTTP Status (AND)</span>
-              <input type="text" id="ex-new-statuses" placeholder="200, 303, 419" spellcheck="false" />
-            </label>
-            <label class="triage-range-field triage-range-field-sm">
-              <span class="field-label">Kunci Source IP (AND)</span>
-              <input type="text" id="ex-new-src-ips" placeholder="192.0.2.10 atau 10.0.0.*" spellcheck="false" />
-            </label>
-            <label class="triage-range-field triage-range-field-sm">
-              <span class="field-label">Kunci User-Agent (AND)</span>
-              <input type="text" id="ex-new-ua" placeholder="MobileApp atau HealthCheck" spellcheck="false" />
-            </label>
-            <label class="triage-range-field triage-range-field-sm">
-              <span class="field-label">Kunci Referer (AND)</span>
-              <input type="text" id="ex-new-referer" placeholder="portal.example.com" spellcheck="false" />
-            </label>
             <label class="triage-range-field">
               <span class="field-label">Keterangan (opsional)</span>
               <input type="text" id="ex-new-note" placeholder="Alasan pengecualian" />
             </label>
             <button type="button" class="btn primary btn-sm" id="btn-ex-save-new">Simpan Rule</button>
             <button type="button" class="btn ghost btn-sm" id="btn-ex-cancel-new">Batal</button>
+            <details class="advanced-details field-full">
+              <summary class="advanced-summary">Pengunci Tambahan AND (Opsional)</summary>
+              <div class="ex-locks-grid">
+                <label class="triage-range-field triage-range-field-sm">
+                  <span class="field-label">Kunci Rule ID (AND)</span>
+                  <input type="text" id="ex-new-rule-ids" placeholder="31153, 31154" spellcheck="false" />
+                </label>
+                <label class="triage-range-field triage-range-field-sm">
+                  <span class="field-label">Kunci HTTP Status (AND)</span>
+                  <input type="text" id="ex-new-statuses" placeholder="200, 303, 419" spellcheck="false" />
+                </label>
+                <label class="triage-range-field triage-range-field-sm">
+                  <span class="field-label">Kunci Source IP (AND)</span>
+                  <input type="text" id="ex-new-src-ips" placeholder="192.0.2.10 atau 10.0.0.*" spellcheck="false" />
+                </label>
+                <label class="triage-range-field triage-range-field-sm">
+                  <span class="field-label">Kunci User-Agent (AND)</span>
+                  <input type="text" id="ex-new-ua" placeholder="MobileApp atau HealthCheck" spellcheck="false" />
+                </label>
+                <label class="triage-range-field triage-range-field-sm">
+                  <span class="field-label">Kunci Referer (AND)</span>
+                  <input type="text" id="ex-new-referer" placeholder="portal.example.com" spellcheck="false" />
+                </label>
+              </div>
+            </details>
           </div>
 
           <div class="history-toolbar">
@@ -1120,7 +1245,7 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="ex-search" placeholder="Cari pola, tenant, pengunci AND, atau keterangan…" />
+              <input type="search" id="ex-search" placeholder="Cari pola, tenant, keterangan" aria-label="Cari di Daftar Exclude" />
             </div>
             <select id="ex-filter-tenant" aria-label="Filter tenant daftar exclude">
               <option value="all">Semua Tenant</option>
@@ -1138,13 +1263,13 @@
           <div class="wzh-discover-wrap">
             <table class="wzh-discover-table wzh-ex-table">
               <colgroup>
-                <col style="width: 56px" />
-                <col style="width: 108px" />
-                <col style="width: 108px" />
-                <col style="width: 96px" />
-                <col style="width: 34%" />
-                <col style="width: 28%" />
-                <col style="width: 132px" />
+                <col class="col-ex-chk" />
+                <col class="col-ex-tenant" />
+                <col class="col-ex-target" />
+                <col class="col-ex-mode" />
+                <col />
+                <col />
+                <col class="col-ex-act" />
               </colgroup>
               <thead>
                 <tr>
@@ -1162,6 +1287,11 @@
           </div>
 
           <div id="exclusions-page-empty" class="empty" hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+            </div>
             <h2>Belum ada rule exclude</h2>
             <p>Gunakan tombol "Abaikan + Exclude" pada kartu AI Triage atau tambahkan aturan baru di atas.</p>
           </div>
@@ -1178,24 +1308,24 @@
 
           <div class="triage-stats-kpi-grid">
             <article class="triage-stat-card">
-              <span class="triage-stat-label">Alert Ditriage AI</span>
+              <span class="triage-stat-label">Alert Dianalisis AI</span>
               <span class="triage-stat-value" id="stat-ai-triaged">0</span>
-              <span class="triage-stat-sub" id="stat-total-handled">0 total alert ditangani</span>
+              <span class="triage-stat-sub" id="stat-total-handled">Total masuk: 0 alert (0 AI + 0 Exclude)</span>
             </article>
             <article class="triage-stat-card">
-              <span class="triage-stat-label">Dijadikan Case</span>
-              <span class="triage-stat-value" id="stat-case-alerts">0</span>
-              <span class="triage-stat-sub" id="stat-case-count">0 case dibuat</span>
+              <span class="triage-stat-label">Case Dibuat</span>
+              <span class="triage-stat-value" id="stat-case-count">0</span>
+              <span class="triage-stat-sub" id="stat-case-alerts">0 alert tergabung dalam case</span>
             </article>
             <article class="triage-stat-card">
               <span class="triage-stat-label">Disaring Exclude</span>
               <span class="triage-stat-value" id="stat-excluded-alerts">0</span>
-              <span class="triage-stat-sub" id="stat-ex-rules">0 / 0 aturan aktif</span>
+              <span class="triage-stat-sub" id="stat-ex-rules">0 / 0 aturan aktif di Daftar Exclude</span>
             </article>
             <article class="triage-stat-card">
-              <span class="triage-stat-label">Antrean Aktif &amp; Diabaikan</span>
+              <span class="triage-stat-label">Alert di Antrean Aktif</span>
               <span class="triage-stat-value" id="stat-active-alerts">0</span>
-              <span class="triage-stat-sub" id="stat-dismissed-alerts">0 grup aktif · 0 diabaikan</span>
+              <span class="triage-stat-sub" id="stat-dismissed-alerts">0 grup aktif · 0 alert dihapus/diabaikan</span>
             </article>
           </div>
 
@@ -1233,6 +1363,7 @@
                   <thead>
                     <tr>
                       <th>Pola Rule</th>
+                      <th>Tenant</th>
                       <th>Jumlah Terblokir</th>
                       <th>Terakhir Terpicu</th>
                     </tr>
@@ -1246,7 +1377,7 @@
         </section>
 
         <!-- VIEW 9: Inspector Alert 1-per-1 (Gaya Wazuh Discover) -->
-        <section id="view-triage-inspector" class="triage-view" hidden>
+        <section id="view-triage-inspector" class="triage-view" aria-label="Inspector Alert Detail" hidden>
           <div class="triage-status-bar wzh-inspector-bar">
             <button type="button" class="btn ghost btn-sm" id="btn-insp-back">← Kembali</button>
             <div class="wzh-inspector-meta">
@@ -1255,7 +1386,7 @@
             </div>
             <span class="spacer"></span>
             <button type="button" class="btn ghost btn-sm" id="btn-insp-fields">Kolom Field</button>
-            <button type="button" class="btn accent btn-sm" id="btn-insp-group-promote">Buat Case Grup</button>
+            <button type="button" class="btn primary btn-sm" id="btn-insp-group-promote">Buat Case Grup</button>
             <button type="button" class="btn ghost btn-sm" id="btn-insp-group-ignore">Abaikan + Exclude Grup</button>
             <button type="button" class="btn danger btn-sm" id="btn-insp-group-dismiss">Hapus Grup</button>
           </div>
@@ -1264,7 +1395,7 @@
 
           <div class="triage-sublist-toolbar">
             <label class="triage-sublist-info">
-              <input type="checkbox" class="triage-subalert-check" id="insp-select-all" />
+              <input type="checkbox" class="triage-subalert-check" id="insp-select-all" aria-label="Pilih semua alert" />
               <span id="insp-sel-count">0 alert</span>
             </label>
             <div class="search-box">
@@ -1272,13 +1403,13 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M20 20l-3.5-3.5" />
               </svg>
-              <input type="search" id="insp-search" placeholder="Filter di dalam alert grup ini…" />
+              <input type="search" id="insp-search" placeholder="Filter alert di grup ini" aria-label="Filter alert di grup ini" />
             </div>
             <div class="triage-sublist-actions" id="insp-bulk-actions">
               <button type="button" class="btn ghost btn-xs" id="btn-insp-split" disabled>Pisah Grup Baru</button>
               <button type="button" class="btn ghost btn-xs" id="btn-insp-ignore-sel" disabled>Abaikan + Exclude</button>
               <button type="button" class="btn danger btn-xs" id="btn-insp-remove-sel" disabled>Hapus Terpilih</button>
-              <button type="button" class="btn accent btn-xs" id="btn-insp-promote-sel" disabled>Buat Case Terpilih</button>
+              <button type="button" class="btn primary btn-xs" id="btn-insp-promote-sel" disabled>Buat Case Terpilih</button>
             </div>
           </div>
 
@@ -1321,7 +1452,7 @@
               <strong id="um-profile-name">—</strong>
               <span class="mono field-hint" id="um-profile-username">@—</span>
             </div>
-            <span class="role-badge" id="um-profile-role">ANALYST</span>
+            <span class="role-badge" id="um-profile-role">Analyst</span>
           </div>
 
           <form id="form-change-pw" class="um-form-stack" novalidate>
@@ -1382,7 +1513,7 @@
               <strong id="reset-pw-target-label">Reset Password User</strong>
             </div>
             <div class="inline-reset-controls">
-              <input type="password" id="reset-pw-input" placeholder="Password baru (min. 6 karakter)" autocomplete="new-password" />
+              <input type="password" id="reset-pw-input" placeholder="Password baru (min. 6 karakter)" aria-label="Password baru" autocomplete="new-password" />
               <button type="button" id="btn-reset-pw-confirm" class="btn primary btn-xs">Simpan Password</button>
               <button type="button" id="btn-reset-pw-cancel" class="btn ghost btn-xs">Batal</button>
             </div>
@@ -1458,11 +1589,12 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="/config.js?v=20261126n"></script>
-  <script src="/js/numbering.js?v=20261126n"></script>
-  <script src="/js/extract.js?v=20261126n"></script>
-  <script src="/js/app.js?v=20261126n"></script>
-  <script src="/js/triage-ui.js?v=20261126n"></script>
+  <script src="/config.js?v=20261127f"></script>
+  <script src="/js/numbering.js?v=20261127f"></script>
+  <script src="/js/extract.js?v=20261127f"></script>
+  <script src="/js/markdown.js?v=20261127f"></script>
+  <script src="/js/app.js?v=20261127f"></script>
+  <script src="/js/triage-ui.js?v=20261127f"></script>
 </body>
 
 </html>

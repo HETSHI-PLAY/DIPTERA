@@ -351,8 +351,10 @@ async function main() {
     // - 1 legit 400 hit on SAME rule 31151 in tenant "instiki" (must stay separate FP group!)
     // - 1 review hit in tenant "instiki" (to test manual same-tenant merge)
     // - 1 attack hit in tenant "pradita" (must stay strictly isolated in tenant "pradita")
+    const recentBaseMs = Date.now() - 10 * 60 * 1000;
+    const recentIso = (secOffset) => new Date(recentBaseMs + secOffset * 1000).toISOString();
     const rawAttackInstiki1 = {
-      '@timestamp': '2026-11-26T01:05:00.000Z',
+      '@timestamp': recentIso(0),
       rule: { id: '31151', level: 10, description: 'Multiple web server 400 error codes.' },
       agent: { id: '001', name: 'instiki-web-01' },
       data: { srcip: '157.245.36.108', url: '/.env', http_user_agent: 'l9scan/2.0' },
@@ -360,35 +362,35 @@ async function main() {
       custom_preserved_flag: 'keep-intact-1',
     };
     const rawAttackInstiki2 = {
-      '@timestamp': '2026-11-26T01:05:15.000Z',
+      '@timestamp': recentIso(15),
       rule: { id: '31151', level: 12, description: 'Multiple web server 400 error codes.' },
       agent: { id: '002', name: 'instiki-portal-02' },
       data: { srcip: '157.245.36.108', url: '/.git/config', http_user_agent: 'l9scan/2.0' },
       full_log: '157.245.36.108 "GET /.git/config HTTP/1.1" 400 "l9scan/2.0"',
     };
     const rawLegitInstiki = {
-      '@timestamp': '2026-11-26T01:05:25.000Z',
+      '@timestamp': recentIso(25),
       rule: { id: '31151', level: 8, description: 'Multiple web server 400 error codes.' },
       agent: { id: '001', name: 'instiki-web-01' },
       data: { srcip: '10.10.2.5', url: '/apps/form?typo-legit=1', http_user_agent: 'Mozilla/5.0' },
       full_log: '10.10.2.5 "POST /apps/form?typo-legit=1 HTTP/1.1" 400 "Mozilla/5.0"',
     };
     const rawReviewInstiki = {
-      '@timestamp': '2026-11-26T01:05:40.000Z',
+      '@timestamp': recentIso(40),
       rule: { id: '5710', level: 10, description: 'Attempt to login using a non-existent user' },
       agent: { id: '003', name: 'instiki-ssh-03' },
       data: { srcip: '45.10.20.30' },
       full_log: 'sshd: Invalid user admin from 45.10.20.30',
     };
     const rawExcludedLogin = {
-      '@timestamp': '2026-11-26T01:05:45.000Z',
+      '@timestamp': recentIso(45),
       rule: { id: '31151', level: 7, description: 'Web 400' },
       agent: { id: '001', name: 'instiki-web-01' },
       data: { srcip: '10.10.2.8', url: '/login.php' },
       full_log: '10.10.2.8 "POST /login.php HTTP/1.1" 400',
     };
     const rawAttackPradita = {
-      '@timestamp': '2026-11-26T01:06:00.000Z',
+      '@timestamp': recentIso(60),
       rule: { id: '31151', level: 15, description: 'Multiple web server 400 error codes.' },
       agent: { id: '010', name: 'pradita-web-01' },
       data: { srcip: '157.245.36.108', url: '/.env' },
@@ -1272,8 +1274,45 @@ async function main() {
     assert.ok(statsRes.json.summary.casesCreated >= 1);
     assert.ok(statsRes.json.summary.caseAlerts >= 1);
     assert.ok(statsRes.json.summary.excludedAlerts >= 1);
+    assert.equal(
+      statsRes.json.summary.totalHandledAlerts,
+      statsRes.json.summary.aiTriagedAlerts + statsRes.json.summary.excludedAlerts,
+    );
     assert.ok(Array.isArray(statsRes.json.perTenant));
     assert.ok(Array.isArray(statsRes.json.topExcludedRules) && statsRes.json.topExcludedRules.length >= 1);
+
+    // Deleting an exclusion rule prunes its stale hits from excludedAlerts & topExcludedRules
+    const topHit = statsRes.json.topExcludedRules.find((r) => r.ruleId);
+    assert.ok(topHit, 'Expected topExcludedRules to include ruleId');
+    const delRuleRes = await httpJson(`${baseUrl}/api/triage/exclusions/${encodeURIComponent(topHit.ruleId)}`, {
+      method: 'DELETE',
+    });
+    assert.equal(delRuleRes.status, 200);
+    const statsAfterDel = await httpJson(`${baseUrl}/api/triage/stats`);
+    assert.equal(statsAfterDel.status, 200);
+    assert.equal(statsAfterDel.json.summary.excludedAlerts, statsRes.json.summary.excludedAlerts - topHit.count);
+    assert.equal(
+      statsAfterDel.json.topExcludedRules.some((r) => r.ruleId === topHit.ruleId),
+      false,
+    );
+
+    // Promote 1 group WITHOUT resetWatermark -> only promoted group is removed, other groups remain
+    const queueBefore = await httpJson(`${baseUrl}/api/triage/queue`);
+    assert.equal(queueBefore.status, 200);
+    const beforeGroups = queueBefore.json.groups || [];
+    assert.ok(beforeGroups.length >= 2, `Expected >= 2 groups before single-group promote, got ${beforeGroups.length}`);
+    const targetGrp = beforeGroups[0];
+    const singlePromoteRes = await httpJson(`${baseUrl}/api/triage/promote`, {
+      method: 'POST',
+      body: {
+        groupId: targetGrp.group_id,
+        workspace: 'asoc',
+      },
+    });
+    assert.equal(singlePromoteRes.status, 200);
+    const afterGroups = singlePromoteRes.json.snapshot?.groups || [];
+    assert.equal(afterGroups.length, beforeGroups.length - 1);
+    assert.equal(afterGroups.some((g) => g.group_id === targetGrp.group_id), false);
 
     console.log('ALL_TRIAGE_TESTS_PASSED (20/20)');
   } finally {

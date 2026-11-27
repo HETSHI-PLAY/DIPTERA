@@ -1344,7 +1344,28 @@ function createTriageEngine(options = {}) {
 
   function getTriageStats() {
     const excludedMap = state.excludedAlertMap && typeof state.excludedAlertMap === 'object' ? state.excludedAlertMap : {};
-    const excludedSet = new Set(Object.keys(excludedMap));
+    const allExcludedIds = new Set(Object.keys(excludedMap));
+    const ruleList = config.exclusionRules || [];
+    const ruleById = new Map(ruleList.map((r) => [r.id, r]));
+    const ruleByPattern = new Map();
+    for (const r of ruleList) {
+      if (r?.pattern && !ruleByPattern.has(r.pattern)) ruleByPattern.set(r.pattern, r);
+    }
+
+    const matchedExcludedEntries = [];
+    for (const entry of Object.values(excludedMap)) {
+      if (!entry || typeof entry !== 'object') continue;
+      let matchedRule = null;
+      if (entry.ruleId && ruleById.has(entry.ruleId)) {
+        matchedRule = ruleById.get(entry.ruleId);
+      } else if (!entry.ruleId && entry.ruleLabel && ruleByPattern.has(entry.ruleLabel)) {
+        matchedRule = ruleByPattern.get(entry.ruleLabel);
+      }
+      if (matchedRule) {
+        matchedExcludedEntries.push({ entry, rule: matchedRule });
+      }
+    }
+
     const activeAlertIds = new Set();
     const verdicts = {
       TRUE_POSITIVE: { groups: 0, alerts: 0 },
@@ -1404,7 +1425,7 @@ function createTriageEngine(options = {}) {
       }
     }
 
-    for (const rule of config.exclusionRules || []) {
+    for (const rule of ruleList) {
       const tSlug = normalizeTenantScope(rule?.tenant);
       if (tSlug) {
         ensureTenantRow(tSlug).exclusionRules++;
@@ -1421,21 +1442,27 @@ function createTriageEngine(options = {}) {
       ...caseAlertSet,
     ]) {
       const s = String(id || '');
-      if (s && !excludedSet.has(s)) aiTriagedSet.add(s);
+      if (s && !allExcludedIds.has(s)) aiTriagedSet.add(s);
     }
 
     const activeQueueAlerts = verdicts.TRUE_POSITIVE.alerts + verdicts.NEEDS_REVIEW.alerts + verdicts.FALSE_POSITIVE.alerts;
     const caseAlerts = Math.max(caseAlertSet.size, historyAlertSum);
 
     const ruleHits = new Map();
-    for (const entry of Object.values(excludedMap)) {
-      const label = String(entry?.ruleLabel || '').trim() || '(Tanpa label)';
-      const cur = ruleHits.get(label) || { ruleLabel: label, count: 0, lastAt: null };
+    for (const { entry, rule } of matchedExcludedEntries) {
+      const key = rule.id || rule.pattern;
+      const cur = ruleHits.get(key) || {
+        ruleId: rule.id || '',
+        ruleLabel: rule.pattern || String(entry?.ruleLabel || '').trim() || '(Tanpa label)',
+        tenant: normalizeTenantScope(rule.tenant),
+        count: 0,
+        lastAt: null,
+      };
       cur.count++;
       if (entry?.at && (!cur.lastAt || String(entry.at) > cur.lastAt)) {
         cur.lastAt = String(entry.at);
       }
-      ruleHits.set(label, cur);
+      ruleHits.set(key, cur);
     }
 
     const topExcludedRules = [...ruleHits.values()]
@@ -1448,19 +1475,20 @@ function createTriageEngine(options = {}) {
       return scoreB - scoreA || a.tenant.localeCompare(b.tenant);
     });
 
+    const excludedAlerts = matchedExcludedEntries.length;
     return {
       ok: true,
       summary: {
-        totalHandledAlerts: aiTriagedSet.size + excludedSet.size,
+        totalHandledAlerts: aiTriagedSet.size + excludedAlerts,
         aiTriagedAlerts: aiTriagedSet.size,
-        excludedAlerts: excludedSet.size,
+        excludedAlerts,
         caseAlerts,
         casesCreated: (caseHistory || []).length,
         dismissedAlerts: dismissedSet.size,
         activeQueueGroups: (state.groups || []).length,
         activeQueueAlerts,
-        activeExclusionRules: config.exclusionRules.filter((r) => r.enabled !== false).length,
-        totalExclusionRules: config.exclusionRules.length,
+        activeExclusionRules: ruleList.filter((r) => r.enabled !== false).length,
+        totalExclusionRules: ruleList.length,
       },
       verdicts,
       perTenant,
@@ -1932,7 +1960,7 @@ function createTriageEngine(options = {}) {
       const ex = evaluateExclusions(raw, config.exclusionRules, tenant);
       if (ex.excluded) {
         if (mutateExclusions) {
-          state.excludedAlertMap[id] = { ruleLabel: ex.ruleLabel, at: new Date().toISOString() };
+          state.excludedAlertMap[id] = { ruleId: ex.ruleId, ruleLabel: ex.ruleLabel, at: new Date().toISOString() };
           state.processedAlertIds.push(id);
         }
         excludedCount++;
@@ -2893,10 +2921,24 @@ function createTriageEngine(options = {}) {
 
   function deleteExclusionRule(id) {
     const ruleId = String(id || '').trim();
-    const before = config.exclusionRules.length;
-    config.exclusionRules = config.exclusionRules.filter((r) => r.id !== ruleId);
-    if (config.exclusionRules.length === before) {
+    const removed = config.exclusionRules.find((r) => r.id === ruleId);
+    if (!removed) {
       throw Object.assign(new Error('Aturan exclude tidak ditemukan.'), { status: 404 });
+    }
+    config.exclusionRules = config.exclusionRules.filter((r) => r.id !== ruleId);
+    const hasSamePatternRemaining = config.exclusionRules.some((r) => r.pattern === removed.pattern);
+    const prunedIds = new Set();
+    for (const [aid, entry] of Object.entries(state.excludedAlertMap || {})) {
+      const matchById = entry?.ruleId && entry.ruleId === ruleId;
+      const matchLegacy = !entry?.ruleId && entry?.ruleLabel === removed.pattern && !hasSamePatternRemaining;
+      if (matchById || matchLegacy) {
+        delete state.excludedAlertMap[aid];
+        prunedIds.add(aid);
+      }
+    }
+    if (prunedIds.size > 0) {
+      state.processedAlertIds = (state.processedAlertIds || []).filter((aid) => !prunedIds.has(aid));
+      saveState();
     }
     config.updatedAt = new Date().toISOString();
     saveConfig();
@@ -2926,8 +2968,9 @@ function createTriageEngine(options = {}) {
     const recordExcludedAlerts = (alerts, rule) => {
       removedAlerts += alerts.length;
       if (!isQueue) return;
+      const atIso = new Date().toISOString();
       for (const al of alerts) {
-        state.excludedAlertMap[al.alert_id] = { ruleId: rule.id, ruleLabel: rule.pattern };
+        state.excludedAlertMap[al.alert_id] = { ruleId: rule.id, ruleLabel: rule.pattern, at: atIso };
         state.processedAlertIds.push(al.alert_id);
       }
     };
@@ -3376,7 +3419,7 @@ function createTriageEngine(options = {}) {
       state.processedAlertIds.push(id);
     }
 
-    const shouldResetWatermark = payload.resetWatermark !== false;
+    const shouldResetWatermark = payload.resetWatermark === true;
     if (shouldResetWatermark) {
       for (const g of state.groups) {
         for (const a of g.alerts || []) {

@@ -69,6 +69,7 @@ const APP_FILES = {
   '/js/app.js': 'public/js/app.js',
   '/js/triage-ui.js': 'public/js/triage-ui.js',
   '/js/extract.js': 'src/services/extract.js',
+  '/js/markdown.js': 'src/services/markdown.js',
   '/js/numbering.js': 'src/services/numbering.js',
   '/config.js': 'src/config/config.js',
   '/favicon.svg': 'public/favicon.svg',

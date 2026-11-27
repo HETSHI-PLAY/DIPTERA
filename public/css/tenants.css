@@ -9,7 +9,7 @@
 }
 
 .tenant-head {
-  padding: 4px 10px 0;
+  padding: 4px 12px 0;
   background: transparent;
   border-color: transparent;
   cursor: default;
@@ -44,7 +44,7 @@
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  padding: 6px 8px;
+  padding: 8px;
 }
 
 .tenant-row input[type="text"] {
@@ -53,7 +53,7 @@
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
+  padding: 8px 12px;
   color: var(--text);
   font-size: 13px;
 }
@@ -63,7 +63,7 @@
   border: 1px solid transparent;
   color: var(--muted);
   cursor: pointer;
-  padding: 6px;
+  padding: 8px;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -86,17 +86,13 @@
 .case-id-line {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   margin-top: 8px;
 }
 
 @media (min-width: 1000px) {
   .tenant-table {
     max-width: none;
-  }
-
-  .tenant-head {
-    display: none;
   }
 
   .tenants-list {
@@ -106,8 +102,8 @@
   }
 
   .tenant-row {
-    padding: 6px 8px;
-    gap: 6px;
+    padding: 8px;
+    gap: 8px;
   }
 
   .tenant-row .t-name {
@@ -115,11 +111,11 @@
   }
 
   .tenant-row input[type="text"] {
-    padding: 6px 8px;
-    font-size: 12.5px;
+    padding: 8px;
+    font-size: 13px;
   }
 
   .tenant-row .tenant-del {
-    padding: 5px;
+    padding: 8px;
   }
 }

@@ -221,14 +221,20 @@
     const pre = $('#raw-json-pre');
     const titleEl = $('#raw-json-title');
     if (!modal || !pre) return;
+    triageState.lastFocusRawModal = document.activeElement;
     if (titleEl) titleEl.textContent = title || 'Raw Wazuh Alert JSON';
     pre.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
     modal.hidden = false;
+    $('#btn-close-raw-json')?.focus();
   }
 
   function closeRawJsonModal() {
     const modal = $('#raw-json-modal');
     if (modal) modal.hidden = true;
+    if (triageState.lastFocusRawModal && typeof triageState.lastFocusRawModal.focus === 'function') {
+      try { triageState.lastFocusRawModal.focus(); } catch {}
+    }
+    triageState.lastFocusRawModal = null;
   }
 
   function toLocalDatetimeValue(d) {
@@ -532,11 +538,13 @@
                 </div>
               </div>
 
-              <div class="wzh-expanded-tabs" role="tablist">
-                <button type="button" class="wzh-tab-btn ${curTab === 'table' ? 'active' : ''}" data-doc-tab="table" aria-selected="${curTab === 'table'}">Table</button>
-                <button type="button" class="wzh-tab-btn ${curTab === 'json' ? 'active' : ''}" data-doc-tab="json" aria-selected="${curTab === 'json'}">JSON</button>
+              <div class="wzh-doc-toolbar">
+                <div class="wzh-expanded-tabs" role="tablist">
+                  <button type="button" role="tab" class="wzh-tab-btn ${curTab === 'table' ? 'active' : ''}" data-doc-tab="table" aria-selected="${curTab === 'table'}">Table</button>
+                  <button type="button" role="tab" class="wzh-tab-btn ${curTab === 'json' ? 'active' : ''}" data-doc-tab="json" aria-selected="${curTab === 'json'}">JSON</button>
+                </div>
                 ${curTab === 'table'
-                  ? `<input type="search" class="wzh-doc-filter" value="${B.esc(fieldFilterById.get(id) || '')}" placeholder="Filter field atau nilai…" aria-label="Filter field dokumen" />`
+                  ? `<input type="search" class="wzh-doc-filter" value="${B.esc(fieldFilterById.get(id) || '')}" placeholder="Filter field" aria-label="Filter field dokumen" />`
                   : ''}
               </div>
 
@@ -563,7 +571,7 @@
                           <td class="wzh-doc-acts">
                             <button type="button" class="btn ghost btn-xs act-doc-copy-val" data-copy="${B.esc(f.value)}">Copy</button>
                             ${canToggle && onToggleColumn
-                              ? `<button type="button" class="btn ghost btn-xs act-doc-toggle-col" data-col-key="${B.esc(f.key)}">${isColActive ? '✓ Kolom' : '+ Kolom'}</button>`
+                              ? `<button type="button" class="btn ghost btn-xs act-doc-toggle-col" data-col-key="${B.esc(f.key)}">${isColActive ? 'Kolom aktif' : '+ Kolom'}</button>`
                               : ''}
                           </td>
                         </tr>
@@ -704,20 +712,20 @@
       if (isEditing) {
         tr.innerHTML = `
           <td><input type="checkbox" class="ex-edit-enabled" ${rule.enabled !== false ? 'checked' : ''} aria-label="Aktifkan aturan" /></td>
-          <td><input type="text" class="ex-edit-tenant" list="ex-tenant-list" value="${B.esc(rule.tenant || '')}" placeholder="Global" spellcheck="false" /></td>
-          <td><select class="ex-edit-target">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target)}</select></td>
-          <td><select class="ex-edit-mode">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode)}</select></td>
+          <td><input type="text" class="ex-edit-tenant" list="ex-tenant-list" value="${B.esc(rule.tenant || '')}" placeholder="Global" aria-label="Tenant aturan exclude" spellcheck="false" /></td>
+          <td><select class="ex-edit-target" aria-label="Target aturan exclude">${buildSelectOptions(EXCLUSION_TARGET_OPTIONS, rule.target)}</select></td>
+          <td><select class="ex-edit-mode" aria-label="Mode pencocokan">${buildSelectOptions(EXCLUSION_MODE_OPTIONS, rule.mode)}</select></td>
           <td>
-            <input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" spellcheck="false" />
+            <input type="text" class="ex-edit-pattern" value="${B.esc(rule.pattern || '')}" aria-label="Pola utama exclude" spellcheck="false" />
             <div class="wzh-ex-inline-edits">
-              <input type="text" class="ex-edit-rule-ids mono" value="${B.esc(formatCsvValue(rule.ruleIds))}" placeholder="Rule IDs (AND)" spellcheck="false" />
-              <input type="text" class="ex-edit-statuses mono" value="${B.esc(formatCsvValue(rule.httpStatuses))}" placeholder="HTTP Status (AND)" spellcheck="false" />
-              <input type="text" class="ex-edit-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="Source IP (AND)" spellcheck="false" />
-              <input type="text" class="ex-edit-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="User-Agent (AND)" spellcheck="false" />
-              <input type="text" class="ex-edit-referer mono" value="${B.esc(rule.referer || '')}" placeholder="Referer (AND)" spellcheck="false" />
+              <input type="text" class="ex-edit-rule-ids mono" value="${B.esc(formatCsvValue(rule.ruleIds))}" placeholder="Rule IDs (AND)" aria-label="Kunci Rule ID" spellcheck="false" />
+              <input type="text" class="ex-edit-statuses mono" value="${B.esc(formatCsvValue(rule.httpStatuses))}" placeholder="HTTP Status (AND)" aria-label="Kunci HTTP Status" spellcheck="false" />
+              <input type="text" class="ex-edit-src-ips mono" value="${B.esc(formatCsvValue(rule.srcIps))}" placeholder="Source IP (AND)" aria-label="Kunci Source IP" spellcheck="false" />
+              <input type="text" class="ex-edit-ua mono" value="${B.esc(rule.userAgent || '')}" placeholder="User-Agent (AND)" aria-label="Kunci User-Agent" spellcheck="false" />
+              <input type="text" class="ex-edit-referer mono" value="${B.esc(rule.referer || '')}" placeholder="Referer (AND)" aria-label="Kunci Referer" spellcheck="false" />
             </div>
           </td>
-          <td><input type="text" class="ex-edit-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" /></td>
+          <td><input type="text" class="ex-edit-note" value="${B.esc(rule.note || '')}" placeholder="Keterangan" aria-label="Keterangan aturan" /></td>
           <td>
             <div class="wzh-row-btn-group">
               <button type="button" class="btn primary btn-xs act-ex-save-edit">Simpan</button>
@@ -806,7 +814,7 @@
           triageState.exEditingId = rule.id;
           renderExclusionsPage();
         });
-        $('.act-ex-del', tr)?.addEventListener('click', async () => {
+        wireDoubleConfirm($('.act-ex-del', tr), 'Konfirmasi Hapus', async () => {
           try {
             const res = await B.apiFetch('/api/triage/exclusions/' + encodeURIComponent(rule.id), { method: 'DELETE' });
             if (res.rules) {
@@ -847,25 +855,30 @@
     if (pill) {
       if (ws.running) {
         pill.textContent = ws.aiActive ? 'AI Menganalisis…' : 'Polling…';
-        pill.className = 'sync-pill';
+        pill.className = ws.aiActive ? 'sync-pill ai-active' : 'sync-pill';
+      } else if (ws.lastError) {
+        pill.textContent = 'Worker Error';
+        pill.className = 'sync-pill error';
       } else if (data.workerEnabled) {
         pill.textContent = 'Worker Aktif';
         pill.className = 'sync-pill';
       } else {
         pill.textContent = 'Worker Pause';
-        pill.className = 'sync-pill offline';
+        pill.className = 'sync-pill idle';
       }
     }
 
     if ($('#stat-ai-triaged')) $('#stat-ai-triaged').textContent = String(s.aiTriagedAlerts || 0);
-    if ($('#stat-total-handled')) $('#stat-total-handled').textContent = `${s.totalHandledAlerts || 0} total alert ditangani`;
-    if ($('#stat-case-alerts')) $('#stat-case-alerts').textContent = String(s.caseAlerts || 0);
-    if ($('#stat-case-count')) $('#stat-case-count').textContent = `${s.casesCreated || 0} case dibuat`;
+    if ($('#stat-total-handled')) {
+      $('#stat-total-handled').textContent = `Total masuk: ${s.totalHandledAlerts || 0} alert (${s.aiTriagedAlerts || 0} AI + ${s.excludedAlerts || 0} Exclude)`;
+    }
+    if ($('#stat-case-count')) $('#stat-case-count').textContent = String(s.casesCreated || 0);
+    if ($('#stat-case-alerts')) $('#stat-case-alerts').textContent = `${s.caseAlerts || 0} alert tergabung dalam case`;
     if ($('#stat-excluded-alerts')) $('#stat-excluded-alerts').textContent = String(s.excludedAlerts || 0);
-    if ($('#stat-ex-rules')) $('#stat-ex-rules').textContent = `${s.activeExclusionRules || 0} / ${s.totalExclusionRules || 0} aturan aktif`;
+    if ($('#stat-ex-rules')) $('#stat-ex-rules').textContent = `${s.activeExclusionRules || 0} / ${s.totalExclusionRules || 0} aturan aktif di Daftar Exclude`;
     if ($('#stat-active-alerts')) $('#stat-active-alerts').textContent = String(s.activeQueueAlerts || 0);
     if ($('#stat-dismissed-alerts')) {
-      $('#stat-dismissed-alerts').textContent = `${s.activeQueueGroups || 0} grup aktif · ${s.dismissedAlerts || 0} diabaikan`;
+      $('#stat-dismissed-alerts').textContent = `${s.activeQueueGroups || 0} grup aktif · ${s.dismissedAlerts || 0} alert dihapus/diabaikan`;
     }
 
     if ($('#stat-v-tp')) {
@@ -921,8 +934,12 @@
         exEmpty.hidden = true;
         for (const r of rows) {
           const tr = document.createElement('tr');
+          const tBadge = r.tenant
+            ? `<span class="chip mode-reporting">${B.esc(r.tenant)}</span>`
+            : '<span class="chip">Global</span>';
           tr.innerHTML = `
             <td class="mono">${B.esc(r.ruleLabel)}</td>
+            <td>${tBadge}</td>
             <td class="mono">${r.count}</td>
             <td class="mono">${r.lastAt ? B.esc(B.fmtWib(r.lastAt)) : '—'}</td>
           `;
@@ -1192,7 +1209,7 @@
     const btn = $('#btn-triage-worker-toggle');
     if (btn) {
       btn.textContent = enabled ? 'Pause Worker' : 'Start Worker';
-      btn.className = 'btn btn-sm ' + (enabled ? 'amber' : 'accent');
+      btn.className = 'btn btn-sm ' + (enabled ? 'amber' : 'ghost');
     }
 
     const statusEl = $('#trg-worker-pill');
@@ -1210,7 +1227,7 @@
         statusEl.className = 'sync-pill';
       } else {
         statusEl.textContent = 'Worker Pause';
-        statusEl.className = 'sync-pill offline';
+        statusEl.className = 'sync-pill idle';
       }
     }
 
@@ -1226,13 +1243,13 @@
         aiPill.className = 'sync-pill ai-active';
       } else if (ws.lastError && !running) {
         aiPill.textContent = 'AI / Poll Error';
-        aiPill.className = 'sync-pill offline';
+        aiPill.className = 'sync-pill error';
       } else if (aiConfigured) {
         aiPill.textContent = 'AI Siap';
         aiPill.className = 'sync-pill';
       } else {
         aiPill.textContent = 'AI Belum Diatur';
-        aiPill.className = 'sync-pill offline';
+        aiPill.className = 'sync-pill idle';
       }
     }
 
@@ -1283,6 +1300,7 @@
     const progBox = $('#trg-poll-progress');
     const progMsg = $('#trg-poll-progress-msg');
     const progPct = $('#trg-poll-progress-pct');
+    const progTrack = $('#trg-poll-progress-track');
     const progFill = $('#trg-poll-progress-fill');
     if (progBox) {
       if (running || manualWaiting) {
@@ -1293,12 +1311,14 @@
         if (phase === 'analyzing_ai' && totalChunks > 0) {
           const pct = Math.max(5, Math.min(100, Math.round((doneChunks / totalChunks) * 100)));
           if (progPct) progPct.textContent = `${doneChunks}/${totalChunks} batch (${pct}%)`;
+          if (progTrack) progTrack.setAttribute('aria-valuenow', String(pct));
           if (progFill) {
             progFill.className = 'triage-progress-fill';
             progFill.style.transform = `scaleX(${pct / 100})`;
           }
         } else {
           if (progPct) progPct.textContent = '';
+          if (progTrack) progTrack.setAttribute('aria-valuenow', '0');
           if (progFill) {
             progFill.style.transform = '';
             progFill.className = 'triage-progress-fill is-indeterminate';
@@ -1307,6 +1327,7 @@
       } else {
         progBox.hidden = true;
         if (progPct) progPct.textContent = '';
+        if (progTrack) progTrack.setAttribute('aria-valuenow', '0');
       }
     }
   }
@@ -1421,7 +1442,7 @@
       title: `${promoInfo.cardCount} kartu form dibuat (${res.tenant})`,
       body: isBatch24h
         ? 'Wazuh Alert ID dicatat ke Audit Triage (antrean AI Triage utama tidak terganggu).'
-        : 'Wazuh Alert ID dicatat ke Audit Triage & watermark antrean direset.',
+        : 'Grup yang dibuat case dihapus dari antrean & dicatat ke Audit Triage (grup lain tetap aman).',
     });
   }
 
@@ -1574,11 +1595,16 @@
     const modal = $('#exclude-preview-modal');
     if (modal) modal.hidden = true;
     triageState.excludePreviewCtx = null;
+    if (triageState.lastFocusExModal && typeof triageState.lastFocusExModal.focus === 'function') {
+      try { triageState.lastFocusExModal.focus(); } catch {}
+    }
+    triageState.lastFocusExModal = null;
   }
 
   async function openExcludePreviewModal(ctx) {
     const modal = $('#exclude-preview-modal');
     if (!modal) return;
+    triageState.lastFocusExModal = document.activeElement;
     triageState.excludePreviewCtx = ctx;
     const msgEl = $('#ex-modal-ai-msg');
     showInlineStatus(msgEl, true, '');
@@ -1590,6 +1616,7 @@
     }
     renderExcludePreviewRows([]);
     modal.hidden = false;
+    $('#btn-close-ex-modal')?.focus();
 
     try {
       const res = await B.apiFetch('/api/triage/exclusions/suggest', {
@@ -1857,7 +1884,7 @@
           groupId: insp.groupId,
           alertIds: [row.alert_id],
           workspace: B.getActiveWorkspace(),
-          resetWatermark: !isBatch24h,
+          resetWatermark: false,
           isBatch24h,
         });
       });
@@ -1915,7 +1942,7 @@
           groupId: insp.groupId,
           alertIds: [row.alert_id],
           workspace: B.getActiveWorkspace(),
-          resetWatermark: !isBatch24h,
+          resetWatermark: false,
           isBatch24h,
         });
       });
@@ -1955,7 +1982,7 @@
         <div class="triage-card-head">
           <div class="triage-card-badges">
             <label class="triage-select-wrap" title="Pilih untuk digabungkan dalam 1 tenant">
-              <input type="checkbox" class="trg-group-check" ${isSelected ? 'checked' : ''} />
+              <input type="checkbox" class="trg-group-check" aria-label="Pilih grup ${B.esc(g.incident_title || g.group_id)}" ${isSelected ? 'checked' : ''} />
             </label>
             <span class="chip ${vMeta.cls}">${B.esc(vMeta.label)}</span>
             ${g.unanalyzed ? '<span class="chip verdict-unanalyzed">Unanalyzed</span>' : ''}
@@ -1996,7 +2023,7 @@
         promoteFromTriage({
           groupId: g.group_id,
           workspace: B.getActiveWorkspace(),
-          resetWatermark: !isBatch24h,
+          resetWatermark: false,
           isBatch24h,
         });
       });
@@ -2128,13 +2155,13 @@
         pill.className = 'sync-pill';
       } else if (phase === 'error') {
         pill.textContent = 'Gagal';
-        pill.className = 'sync-pill offline';
+        pill.className = 'sync-pill error';
       } else if (phase === 'cancelled') {
         pill.textContent = 'Dibatalkan';
         pill.className = 'sync-pill offline';
       } else {
         pill.textContent = 'Siap';
-        pill.className = 'sync-pill offline';
+        pill.className = 'sync-pill idle';
       }
     }
 
@@ -2683,7 +2710,7 @@
           body: JSON.stringify(pollBody),
         });
         if (res.skipped) {
-          B.toast({ type: 'info', title: 'Wazuh URL belum diatur', body: 'Isi konfigurasi Wazuh Indexer di Pengaturan → Wazuh & AI Triage.' });
+          B.toast({ type: 'info', title: 'Wazuh URL belum diatur', body: 'Isi konfigurasi Wazuh Indexer di Pengaturan → Wazuh Indexer.' });
         } else {
           if (res.snapshot) triageState.snapshot = res.snapshot;
           renderTriageView();
@@ -2731,7 +2758,7 @@
       }
     });
 
-    $('#btn-triage-reset')?.addEventListener('click', async () => {
+    wireDoubleConfirm($('#btn-triage-reset'), 'Konfirmasi Reset Watermark', async () => {
       try {
         const res = await B.apiFetch('/api/triage/reset', {
           method: 'POST',
@@ -3023,7 +3050,7 @@
           body: JSON.stringify({
             tenant: ($('#ex-new-tenant')?.value || '').trim(),
             target: $('#ex-new-target')?.value || 'path',
-            mode: $('#ex-new-mode')?.value || 'contains',
+            mode: $('#ex-new-mode')?.value || 'wildcard',
             pattern,
             ruleIds: splitCsvInput($('#ex-new-rule-ids')?.value),
             httpStatuses: splitCsvInput($('#ex-new-statuses')?.value),
@@ -3096,7 +3123,7 @@
       promoteFromTriage({
         groupId: insp.groupId,
         workspace: B.getActiveWorkspace(),
-        resetWatermark: !isBatch24h,
+        resetWatermark: false,
         isBatch24h,
       });
     });
@@ -3151,7 +3178,7 @@
         groupId: insp.groupId,
         alertIds: ids,
         workspace: B.getActiveWorkspace(),
-        resetWatermark: !isBatch24h,
+        resetWatermark: false,
         isBatch24h,
       });
     });
@@ -3159,7 +3186,11 @@
     // Case Audit History Controls
     $('#btn-trghist-refresh')?.addEventListener('click', () => fetchTriageHistory(false));
     $('#trghist-filter-tenant')?.addEventListener('change', () => fetchTriageHistory(false));
-    $('#trghist-search')?.addEventListener('input', () => fetchTriageHistory(true));
+    let trgHistSearchTimer = null;
+    $('#trghist-search')?.addEventListener('input', () => {
+      clearTimeout(trgHistSearchTimer);
+      trgHistSearchTimer = setTimeout(() => fetchTriageHistory(true), 200);
+    });
 
     // Raw JSON Modal
     $('#btn-close-raw-json')?.addEventListener('click', closeRawJsonModal);
@@ -3312,6 +3343,7 @@
     stopBatch24hProgressTimer();
     closeSse();
     closeRawJsonModal();
+    closeExcludePreviewModal();
   });
 
   bindEvents();

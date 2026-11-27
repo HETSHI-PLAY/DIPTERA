@@ -194,6 +194,51 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = (v) =>
     String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function renderMdSafe(markdown) {
+    if (window.AlphaMarkdown && typeof window.AlphaMarkdown.renderMarkdown === 'function') {
+      return window.AlphaMarkdown.renderMarkdown(markdown);
+    }
+    return `<pre class="md-pre">${esc(markdown)}</pre>`;
+  }
+
+  function buildMarkdownViewerHtml(markdown, { dataPreKind = '' } = {}) {
+    const preAttr = dataPreKind ? ` data-pre-kind="${esc(dataPreKind)}"` : '';
+    return `
+      <div class="md-viewer">
+        <div class="md-viewer-bar">
+          <span class="md-viewer-title">Ringkasan Laporan</span>
+          <div class="md-viewer-tabs" role="tablist">
+            <button type="button" role="tab" class="md-mode-btn active" data-md-mode="rendered" aria-selected="true">Pratinjau</button>
+            <button type="button" role="tab" class="md-mode-btn" data-md-mode="raw" aria-selected="false">Teks Markdown</button>
+          </div>
+        </div>
+        <div class="md-rendered"${preAttr}>${renderMdSafe(markdown)}</div>
+        <pre class="md-pre"${preAttr} hidden>${esc(markdown)}</pre>
+      </div>
+    `;
+  }
+
+  function wireMarkdownViewers(rootEl) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('.md-viewer').forEach((viewer) => {
+      const renderedEl = $('.md-rendered', viewer);
+      const rawEl = $('.md-pre', viewer);
+      const btns = viewer.querySelectorAll('.md-mode-btn');
+      btns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const isRaw = btn.dataset.mdMode === 'raw';
+          if (renderedEl) renderedEl.hidden = isRaw;
+          if (rawEl) rawEl.hidden = !isRaw;
+          btns.forEach((b) => {
+            const active = b === btn;
+            b.classList.toggle('active', active);
+            b.setAttribute('aria-selected', String(active));
+          });
+        });
+      });
+    });
+  }
   const uid = () => 'c_' + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
   const joinUrl = (base, p) => String(base || '').replace(/\/+$/, '') + p;
@@ -595,7 +640,7 @@
       if ($('#user-display-name')) $('#user-display-name').textContent = display;
       const badge = $('#user-role-badge');
       if (badge) {
-        badge.textContent = u.role === 'admin' ? 'ADMIN' : 'ANALYST';
+        badge.textContent = u.role === 'admin' ? 'Admin' : 'Analyst';
         badge.className = 'role-badge ' + (u.role === 'admin' ? 'role-admin' : 'role-analyst');
       }
       if (openFromSettingsBtn) openFromSettingsBtn.hidden = false;
@@ -605,7 +650,7 @@
       if (analystInput) analystInput.hidden = true;
       if (reviewerPill) {
         reviewerPill.hidden = false;
-        reviewerPill.innerHTML = `<span>${esc(display)}</span> <span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role.toUpperCase())}</span>`;
+        reviewerPill.innerHTML = `<span>${esc(display)}</span> <span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role === 'admin' ? 'Admin' : 'Analyst')}</span>`;
       }
     } else {
       if (userBar) userBar.hidden = true;
@@ -696,14 +741,37 @@
     if (isUsers) fetchUsers();
   }
 
+  function wireConfirmClick(btnEl, armedLabel, onConfirm) {
+    if (!btnEl) return;
+    const defaultLabel = btnEl.textContent;
+    let timer = null;
+    btnEl.addEventListener('click', async () => {
+      if (btnEl.dataset.armed !== '1') {
+        btnEl.dataset.armed = '1';
+        btnEl.textContent = armedLabel;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          btnEl.dataset.armed = '0';
+          btnEl.textContent = defaultLabel;
+        }, 5000);
+        return;
+      }
+      clearTimeout(timer);
+      btnEl.dataset.armed = '0';
+      btnEl.textContent = defaultLabel;
+      await onConfirm();
+    });
+  }
+
   function openUserModal(defaultTab = 'account') {
     if (!state.currentUser) return;
+    state.lastFocusBeforeModal = document.activeElement;
     const u = state.currentUser;
     if ($('#um-profile-name')) $('#um-profile-name').textContent = u.displayName || u.username;
     if ($('#um-profile-username')) $('#um-profile-username').textContent = '@' + u.username;
     const roleBadge = $('#um-profile-role');
     if (roleBadge) {
-      roleBadge.textContent = u.role.toUpperCase();
+      roleBadge.textContent = u.role === 'admin' ? 'Admin' : 'Analyst';
       roleBadge.className = 'role-badge ' + (u.role === 'admin' ? 'role-admin' : 'role-analyst');
     }
     showInlineMsg($('#pw-msg'), '', '');
@@ -713,11 +781,16 @@
     state.resetPwTargetUser = null;
     if ($('#user-modal')) $('#user-modal').hidden = false;
     switchUserModalTab(defaultTab);
+    $('#btn-close-user-modal')?.focus();
   }
 
   function closeUserModal() {
     if ($('#user-modal')) $('#user-modal').hidden = true;
     state.resetPwTargetUser = null;
+    if (state.lastFocusBeforeModal && typeof state.lastFocusBeforeModal.focus === 'function') {
+      try { state.lastFocusBeforeModal.focus(); } catch {}
+    }
+    state.lastFocusBeforeModal = null;
   }
 
   async function handleChangeOwnPassword(e) {
@@ -783,7 +856,7 @@
           <div><strong>${esc(u.displayName || u.username)}</strong>${isSelf ? ' <span class="chip">Anda</span>' : ''}</div>
           <div class="mono field-hint">@${esc(u.username)}</div>
         </td>
-        <td><span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role.toUpperCase())}</span></td>
+        <td><span class="role-badge ${u.role === 'admin' ? 'role-admin' : 'role-analyst'}">${esc(u.role === 'admin' ? 'Admin' : 'Analyst')}</span></td>
         <td><span class="chip ${u.isActive ? 'appr-approved' : 'appr-denied'}">${u.isActive ? 'Aktif' : 'Nonaktif'}</span></td>
         <td class="mono">${esc(fmtWib(u.createdAt))}</td>
         <td>
@@ -852,7 +925,7 @@
       if (u.id === state.currentUser?.id && res?.user) {
         setAuthUiState(res.user, true);
       }
-      toast({ type: 'info', title: 'Role diperbarui', body: `@${u.username} sekarang ${nextRole.toUpperCase()}` });
+      toast({ type: 'info', title: 'Role diperbarui', body: `@${u.username} sekarang ${nextRole === 'admin' ? 'Admin' : 'Analyst'}` });
       await fetchUsers();
     } catch (err) {
       toast({ type: 'error', title: 'Gagal mengubah role', body: err.message });
@@ -1527,7 +1600,7 @@
       labelEl.className = 'field-label';
       const isCaseId = field.role === 'caseId';
       const isReq = isCaseId ? caseSpec.required : Boolean(field.required);
-      labelEl.innerHTML = esc(field.label) + (isReq ? ' <span style="color:var(--rose)">*</span>' : '');
+      labelEl.innerHTML = esc(field.label) + (isReq ? ' <span class="req-star">*</span>' : '');
       wrap.appendChild(labelEl);
 
       if (isCaseId && !caseSpec.showInput) {
@@ -1789,10 +1862,11 @@
           ${execHref ? `<a class="btn ghost btn-sm" href="${esc(execHref)}" target="_blank" rel="noopener">Eksekusi n8n ↗</a>` : ''}
         </div>
         ${card.result.markdown
-          ? `<pre class="md-pre">${esc(card.result.markdown)}</pre>`
+          ? buildMarkdownViewerHtml(card.result.markdown)
           : '<div class="field-hint">Workflow selesai tanpa halaman Markdown (cek n8n untuk detail).</div>'}
       `;
 
+      wireMarkdownViewers(r.resultBox);
       const copyMdBtn = $('.act-copy-md', r.resultBox);
       if (copyMdBtn) copyMdBtn.addEventListener('click', () => copyText(card.result.markdown, 'Markdown'));
       const copyTitleBtn = $('.act-copy-title', r.resultBox);
@@ -2604,7 +2678,8 @@
       if (state.expandedHistoryId === item.id && item.markdown) {
         const mdTr = document.createElement('tr');
         mdTr.className = 'hist-md-row';
-        mdTr.innerHTML = `<td colspan="9"><pre class="md-pre">${esc(item.markdown)}</pre></td>`;
+        mdTr.innerHTML = `<td colspan="9">${buildMarkdownViewerHtml(item.markdown)}</td>`;
+        wireMarkdownViewers(mdTr);
         tbody.appendChild(mdTr);
       }
     }
@@ -2807,7 +2882,8 @@
     listEl.querySelectorAll('.approval-card').forEach((card) => {
       const id = card.dataset.apprId;
       if (!id) return;
-      card.querySelectorAll('.md-pre[data-pre-kind]').forEach((pre) => {
+      card.querySelectorAll('[data-pre-kind]').forEach((pre) => {
+        if (pre.hidden) return;
         preScrollMap.set(`${id}:${pre.dataset.preKind}`, {
           scrollTop: pre.scrollTop,
           scrollLeft: pre.scrollLeft,
@@ -2886,13 +2962,13 @@
         if (item.rejectionStatus === 'open') {
           const retryLabel = fmtRetryCountdown(item.nextRetryAt);
           rejectionInlineHtml = `
-            <span class="approval-kv-row" style="margin-top: 4px;">
+            <span class="approval-kv-row mt-4">
               ${retryLabel ? `<span class="rejection-retry-pill" title="n8n otomatis meminta approval ulang, atau klik Tandai Selesai untuk langsung meminta approval sekarang">${esc(retryLabel)}</span>` : ''}
             </span>`;
         } else if (item.rejectionStatus === 'acknowledged') {
-          rejectionInlineHtml = '<span class="chip appr-approved" style="align-self: flex-start; margin-top: 4px;">Sudah ditangani</span>';
+          rejectionInlineHtml = '<span class="chip appr-approved align-start mt-4">Sudah ditangani</span>';
         } else if (item.rejectionStatus === 'resolved') {
-          rejectionInlineHtml = '<span class="chip appr-expired" style="align-self: flex-start; margin-top: 4px;">Sudah diajukan ulang</span>';
+          rejectionInlineHtml = '<span class="chip appr-expired align-start mt-4">Sudah diajukan ulang</span>';
         }
       }
 
@@ -2930,7 +3006,7 @@
               ${item.markdown ? '<button class="btn ghost btn-xs act-appr-copy-md" type="button">Salin Markdown</button>' : ''}
               ${hasData ? `<button class="btn ghost btn-xs act-appr-toggle-data" type="button">${dataOpen ? 'Tutup Data Alert' : 'Lihat Data Alert'}</button>` : ''}
             </div>
-            ${mdOpen && item.markdown ? `<pre class="md-pre" data-pre-kind="md">${esc(item.markdown)}</pre>` : ''}
+            ${mdOpen && item.markdown ? buildMarkdownViewerHtml(item.markdown, { dataPreKind: 'md' }) : ''}
             ${dataOpen && hasData ? `<pre class="md-pre" data-pre-kind="data">${esc(formattedData)}</pre>` : ''}
           </div>
         ` : ''}
@@ -2941,15 +3017,15 @@
               <div class="error-box">
                 <strong>Gagal mengirim keputusan ke n8n: ${esc(item.lastError)}</strong>
                 <div>Pastikan workflow n8n masih aktif menunggu webhook resume. Jika eksekusi n8n sudah kedaluwarsa, tandai item ini sebagai kedaluwarsa.</div>
-                <div style="margin-top: 8px;">
+                <div class="mt-8">
                   <button class="btn ghost btn-xs act-appr-expire" type="button">Tandai Kedaluwarsa</button>
                 </div>
               </div>
             ` : ''}
             <div class="approval-decision-controls">
               <div class="approval-reason-wrap">
-                <label class="field-label" for="appr-reason-${esc(item.id)}">Catatan (opsional)</label>
-                <textarea id="appr-reason-${esc(item.id)}" class="appr-reason-input" rows="2" placeholder="Opsional saat Approve; jelaskan alasan jika Deny…"></textarea>
+                <label class="field-label" for="appr-reason-${esc(item.id)}">Catatan (wajib saat Deny)</label>
+                <textarea id="appr-reason-${esc(item.id)}" class="appr-reason-input" rows="2" placeholder="Catatan keputusan"></textarea>
               </div>
               <div class="approval-decision-btns">
                 <button class="btn accent act-appr-approve" type="button">Approve</button>
@@ -3002,14 +3078,25 @@
         });
       }
 
+      wireMarkdownViewers(cardEl);
       const approveBtn = $('.act-appr-approve', cardEl);
       if (approveBtn) {
-        approveBtn.addEventListener('click', () => submitApprovalDecision(item, 'approve', reasonInput ? reasonInput.value : '', cardEl));
+        wireConfirmClick(approveBtn, 'Konfirmasi Approve?', () =>
+          submitApprovalDecision(item, 'approve', reasonInput ? reasonInput.value : '', cardEl)
+        );
       }
 
       const denyBtn = $('.act-appr-deny', cardEl);
       if (denyBtn) {
-        denyBtn.addEventListener('click', () => submitApprovalDecision(item, 'deny', reasonInput ? reasonInput.value : '', cardEl));
+        denyBtn.addEventListener('click', () => {
+          const reason = (reasonInput ? reasonInput.value : '').trim();
+          if (!reason) {
+            toast({ type: 'error', title: 'Alasan penolakan wajib diisi', body: 'Isi alasan penolakan di kolom catatan sebelum Deny.' });
+            if (reasonInput) reasonInput.focus();
+            return;
+          }
+          submitApprovalDecision(item, 'deny', reason, cardEl);
+        });
       }
 
       const expireBtn = $('.act-appr-expire', cardEl);
@@ -3019,7 +3106,7 @@
 
       const deleteBtn = $('.act-appr-delete', cardEl);
       if (deleteBtn) {
-        deleteBtn.addEventListener('click', () => deleteApprovalItem(item));
+        wireConfirmClick(deleteBtn, 'Klik lagi untuk Hapus', () => deleteApprovalItem(item));
       }
 
       const completeRejBtn = $('.act-appr-complete-rej', cardEl);
@@ -3049,7 +3136,8 @@
       listEl.querySelectorAll('.approval-card').forEach((card) => {
         const id = card.dataset.apprId;
         if (!id) return;
-        card.querySelectorAll('.md-pre[data-pre-kind]').forEach((pre) => {
+        card.querySelectorAll('[data-pre-kind]').forEach((pre) => {
+          if (pre.hidden) return;
           const saved = preScrollMap.get(`${id}:${pre.dataset.preKind}`);
           if (saved) {
             pre.scrollTop = saved.scrollTop;
@@ -3526,12 +3614,6 @@
   function updateViewHeading() {
     const ws = state.activeWorkspace;
     const w = wsState(ws);
-    const isRepQueue = state.view === 'queue' && !(ws === 'asoc' && w.activeMode === 'repeating');
-    const navRep = $('#nav-reporting');
-    if (navRep) {
-      navRep.classList.toggle('active', isRepQueue);
-      navRep.setAttribute('aria-pressed', String(isRepQueue));
-    }
     const heading = $('#view-heading');
     if (!heading) return;
     if (state.view === 'history') heading.textContent = 'Riwayat';
@@ -3544,7 +3626,14 @@
     else if (state.view === 'triage-stats') heading.textContent = 'Statistik AI Triage';
     else if (state.view === 'triage-inspector') heading.textContent = 'Inspector Alert (Wazuh View)';
     else if (state.view === 'settings') heading.textContent = 'Pengaturan';
-    else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Repeating' : 'Reporting';
+    else heading.textContent = (ws === 'asoc' && w.activeMode === 'repeating') ? 'Antrian (Repeating)' : 'Antrian';
+  }
+
+  function syncSidebarItemState(el, isActive) {
+    if (!el) return;
+    el.classList.toggle('active', isActive);
+    if (isActive) el.setAttribute('aria-current', 'page');
+    else el.removeAttribute('aria-current');
   }
 
   function switchView(view) {
@@ -3574,26 +3663,16 @@
     if ($('#view-triage-inspector')) $('#view-triage-inspector').hidden = !isTrgInsp;
     $('#view-settings').hidden = !isSettings;
 
-    $('#tab-queue').classList.toggle('active', isQueue);
-    $('#tab-queue').setAttribute('aria-selected', String(isQueue));
-    $('#tab-history').classList.toggle('active', isHist);
-    $('#tab-history').setAttribute('aria-selected', String(isHist));
-    $('#tab-approvals').classList.toggle('active', isAppr);
-    $('#tab-approvals').setAttribute('aria-selected', String(isAppr));
-    $('#tab-triage')?.classList.toggle('active', isTriage);
-    $('#tab-triage')?.setAttribute('aria-selected', String(isTriage));
-    $('#tab-triage-24h')?.classList.toggle('active', isTriage24h);
-    $('#tab-triage-24h')?.setAttribute('aria-selected', String(isTriage24h));
-    $('#tab-live-feed')?.classList.toggle('active', isLive);
-    $('#tab-live-feed')?.setAttribute('aria-selected', String(isLive));
-    $('#tab-triage-history')?.classList.toggle('active', isTrgHist);
-    $('#tab-triage-history')?.setAttribute('aria-selected', String(isTrgHist));
-    $('#tab-triage-exclusions')?.classList.toggle('active', isTrgEx);
-    $('#tab-triage-exclusions')?.setAttribute('aria-selected', String(isTrgEx));
-    $('#tab-triage-stats')?.classList.toggle('active', isTrgStats);
-    $('#tab-triage-stats')?.setAttribute('aria-selected', String(isTrgStats));
-    $('#tab-settings').classList.toggle('active', isSettings);
-    $('#tab-settings').setAttribute('aria-selected', String(isSettings));
+    syncSidebarItemState($('#tab-queue'), isQueue);
+    syncSidebarItemState($('#tab-history'), isHist);
+    syncSidebarItemState($('#tab-approvals'), isAppr);
+    syncSidebarItemState($('#tab-triage'), isTriage);
+    syncSidebarItemState($('#tab-triage-24h'), isTriage24h);
+    syncSidebarItemState($('#tab-live-feed'), isLive);
+    syncSidebarItemState($('#tab-triage-history'), isTrgHist);
+    syncSidebarItemState($('#tab-triage-exclusions'), isTrgEx);
+    syncSidebarItemState($('#tab-triage-stats'), isTrgStats);
+    syncSidebarItemState($('#tab-settings'), isSettings);
 
     if (isMobileViewport()) setSidebarOpen(false);
     updateViewHeading();
@@ -3698,10 +3777,6 @@
     $('#nav-users')?.addEventListener('click', () => {
       if (isMobileViewport()) setSidebarOpen(false);
       openUserModal('users');
-    });
-    $('#nav-reporting')?.addEventListener('click', () => {
-      setActiveMode('reporting');
-      switchView('queue');
     });
     $('#btn-sidebar-toggle')?.addEventListener('click', toggleSidebar);
     $('#sidebar-backdrop')?.addEventListener('click', () => setSidebarOpen(false));
@@ -3972,20 +4047,61 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && $('#raw-json-modal') && !$('#raw-json-modal').hidden) {
-        e.preventDefault();
-        $('#raw-json-modal').hidden = true;
-      } else if (e.key === 'Escape' && $('#app-shell')?.classList.contains('sidebar-open')) {
-        e.preventDefault();
-        setSidebarOpen(false);
-      } else if (e.key === 'Escape' && $('#user-modal') && !$('#user-modal').hidden) {
-        e.preventDefault();
-        closeUserModal();
-      } else if (e.key === 'Escape' && state.view === 'settings') {
-        e.preventDefault();
-        switchView('queue');
-        $('#tab-settings')?.focus();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.view === 'queue') {
+      const authVisible = $('#auth-screen') && !$('#auth-screen').hidden;
+      const rawModalOpen = $('#raw-json-modal') && !$('#raw-json-modal').hidden;
+      const exModalOpen = $('#exclude-preview-modal') && !$('#exclude-preview-modal').hidden;
+      const userModalOpen = $('#user-modal') && !$('#user-modal').hidden;
+      const anyModalOpen = rawModalOpen || exModalOpen || userModalOpen;
+
+      if (e.key === 'Escape') {
+        if (rawModalOpen) {
+          e.preventDefault();
+          $('#btn-close-raw-json')?.click();
+        } else if (exModalOpen) {
+          e.preventDefault();
+          $('#btn-close-ex-modal')?.click();
+        } else if ($('#app-shell')?.classList.contains('sidebar-open')) {
+          e.preventDefault();
+          setSidebarOpen(false);
+        } else if (userModalOpen) {
+          e.preventDefault();
+          closeUserModal();
+        } else if (state.view === 'settings') {
+          const tag = document.activeElement?.tagName || '';
+          if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+            e.preventDefault();
+            switchView('queue');
+            $('#tab-settings')?.focus();
+          }
+        }
+        return;
+      }
+
+      if (authVisible || anyModalOpen) return;
+
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = document.activeElement?.tagName || '';
+        if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) {
+          const searchMap = {
+            history: '#hist-search',
+            approvals: '#appr-search',
+            triage: '#trg-search',
+            'triage-24h': '#b24-search',
+            'live-feed': '#live-search',
+            'triage-history': '#trghist-search',
+            'triage-exclusions': '#ex-search',
+            'triage-inspector': '#insp-search',
+          };
+          const targetSearch = searchMap[state.view] ? $(searchMap[state.view]) : null;
+          if (targetSearch && !targetSearch.hidden) {
+            e.preventDefault();
+            targetSearch.focus();
+            return;
+          }
+        }
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && state.view === 'queue') {
         e.preventDefault();
         const cardEl = document.activeElement?.closest?.('.card[data-id]');
         if (cardEl) {

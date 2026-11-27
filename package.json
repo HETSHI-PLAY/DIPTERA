@@ -8,7 +8,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "hash-credential": "node src/middleware/auth.js",
-    "test": "node test/diptera-unified.test.js && node test/approvals.test.js && node test/numbering.test.js && node test/extract.test.js && node test/server.test.js && node test/auth.test.js && node test/triage.test.js"
+    "test": "node test/diptera-unified.test.js && node test/approvals.test.js && node test/numbering.test.js && node test/extract.test.js && node test/markdown.test.js && node test/server.test.js && node test/auth.test.js && node test/triage.test.js"
   },
   "dependencies": {
     "pg": "^8.23.1"
